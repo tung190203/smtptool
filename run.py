@@ -103,6 +103,13 @@ CHROME_FLAGS = [
 
 write_lock = Lock()
 
+
+def safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except Exception:
+        pass
+
 # Idea 3: thread-local Playwright + browser. Mỗi worker thread giữ 1 browser dùng chung
 # cho mọi account → save ~2-3s/account launch overhead.
 # Browser KHÔNG bind proxy (proxy set ở context-level), nên share được giữa các account/proxy.
@@ -957,9 +964,9 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
       5. OAuth lấy SMTP token
       6. Test SMTP → unlocked | api_failed_<status> | still_blocked | smtp_token_failed
     """
-    print(f"\n{'═'*80}")
-    print(f"  Unlock SMTP for {email}")
-    print('═'*80)
+    safe_print(f"\n{'='*80}")
+    safe_print(f"  Unlock SMTP for {email}")
+    safe_print('='*80)
 
     captured = {"token": None, "anchor": None}
 
@@ -1107,7 +1114,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
 
     # P1: fast path — Microsoft đã xác nhận success, không cần test SMTP.
     if api_was_successful:
-        print(f"  SMTP UNLOCKED (fast path via WasSuccessful=true)")
+        safe_print(f"  SMTP UNLOCKED (fast path via WasSuccessful=true)")
         return "unlocked"
 
     # Fallback path: API không trả WasSuccessful → verify SMTP để chắc chắn.
@@ -1120,7 +1127,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
     c, m = test_smtp(email, tok)
     _log(f"SMTP: {c}: {m[:80]}")
     if c == 235:
-        print(f"  SMTP UNLOCKED!")
+        safe_print(f"  SMTP UNLOCKED!")
         return "unlocked"
 
     if isinstance(api_status, int) and api_status not in (200, 204):
@@ -1181,7 +1188,7 @@ def process(item):
     rec = recovery_email
     proxy_label = proxy["server"] if proxy else "no-proxy"
     prefix = f"[{idx}/{total}] {email}  ({proxy_label})"
-    print(f"{prefix} ... starting", flush=True)
+    safe_print(f"{prefix} ... starting", flush=True)
     try:
         result = unlock_account(email, password, rec, proxy=proxy)
     except Exception as e:
@@ -1201,17 +1208,17 @@ def process(item):
         if oauth and oauth.get("refresh_token"):
             fresh_refresh = oauth["refresh_token"]
             append_line(ENABLED_FILE, f"{email}|{password}|{fresh_refresh}|{CLIENT_ID}")
-            print(f"✅ {prefix} → {result} (refresh ok)", flush=True)
+            safe_print(f"✅ {prefix} -> {result} (refresh ok)", flush=True)
             return True
         else:
             # Cả 2 lần đều fail → ghi failed.txt
             append_line(FAILED_FILE, f"{email}|{password}")
-            print(f"❌ {prefix} → {result} nhưng refresh fail 2 lần", flush=True)
+            safe_print(f"❌ {prefix} -> {result} nhung refresh fail 2 lan", flush=True)
             return False
     else:
         # Failed format: KHÔNG có lý do (theo yêu cầu user)
         append_line(FAILED_FILE, f"{email}|{password}")
-        print(f"❌ {prefix} → {result}", flush=True)
+        safe_print(f"❌ {prefix} -> {result}", flush=True)
         return False
 
 

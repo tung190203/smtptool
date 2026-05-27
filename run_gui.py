@@ -15,6 +15,18 @@ def _runtime_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _ensure_stdio():
+    if not getattr(sys, "frozen", False):
+        return
+    root_dir = _runtime_dir()
+    os.makedirs(root_dir, exist_ok=True)
+    log_path = os.path.join(root_dir, "gui_console.log")
+    if sys.stdout is None:
+        sys.stdout = open(log_path, "a", encoding="utf-8", buffering=1)
+    if sys.stderr is None:
+        sys.stderr = sys.stdout
+
+
 def _show_startup_error(exc):
     root_dir = _runtime_dir()
     log_path = os.path.join(root_dir, "startup_error.log")
@@ -41,6 +53,7 @@ def _show_startup_error(exc):
 
 def main():
     try:
+        _ensure_stdio()
         from gui import tk, SMTPUnlockGUI
         root = tk.Tk()
         root.update_idletasks()
