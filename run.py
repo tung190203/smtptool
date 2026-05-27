@@ -78,6 +78,8 @@ MAX_RETRIES = 2
 SMVMAIL_API = "https://smvmail.com/api/email"
 # Idea 6: giảm timeout default từ 45s → 15s (fail-fast trên error path).
 DEFAULT_TIMEOUT = 15000
+LOGIN_GOTO_TIMEOUT = 30000
+LOGIN_GOTO_RETRIES = 2
 
 # Idea 1: tắt screenshot trong production (đổi True để debug).
 DEBUG_SHOTS = False
@@ -852,6 +854,26 @@ def _has_token(captured) -> bool:
     return bool(captured and captured.get("token") and captured.get("anchor"))
 
 
+def goto_with_retry(page: Page, url: str, *, wait_until: str, timeout: int, retries: int,
+                    label: str) -> tuple[bool, str | None]:
+    last_error = None
+    for attempt in range(1, retries + 1):
+        try:
+            page.goto(url, wait_until=wait_until, timeout=timeout)
+            return True, None
+        except PWTimeout as e:
+            last_error = f"timeout after {timeout // 1000}s"
+            pw_log(f"  [{label}] timeout attempt {attempt}/{retries}")
+        except Exception as e:
+            last_error = str(e).splitlines()[0]
+            pw_log(f"  [{label}] error attempt {attempt}/{retries}: {last_error}")
+            if "ERR_PROXY_CONNECTION_FAILED" in str(e):
+                break
+        if attempt < retries:
+            time.sleep(1)
+    return False, last_error
+
+
 def login_outlook(page: Page, email: str, password: str, recovery_email: str,
                    captured: dict | None = None) -> str:
     """Login MSA. Handle verify-email + password + KMSI.
@@ -866,7 +888,16 @@ def login_outlook(page: Page, email: str, password: str, recovery_email: str,
     )
     pw_log(f"  [login] goto force-login URL")
     # Idea 2 (mức 2): wait_until="commit" — return ngay khi nhận response, DOM build background.
-    page.goto(force_url, wait_until="commit", timeout=DEFAULT_TIMEOUT)
+    ok, err = goto_with_retry(
+        page,
+        force_url,
+        wait_until="commit",
+        timeout=LOGIN_GOTO_TIMEOUT,
+        retries=LOGIN_GOTO_RETRIES,
+        label="login goto",
+    )
+    if not ok:
+        return f"login_goto_failed: {err}"
 
     # Idea 2: wait for email input thay vì sleep cứng 1.5s
     # Idea 10: state="attached" thay "visible" (không cần đợi layout hoàn tất)
