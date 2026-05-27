@@ -34,7 +34,12 @@ if sys.stdout is not None:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-ROOT = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False) and os.name == "nt":
+    ROOT = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "SMTP Unlock Tool")
+elif getattr(sys, "frozen", False):
+    ROOT = os.path.dirname(sys.executable)
+else:
+    ROOT = os.path.dirname(os.path.abspath(__file__))
 INPUT_FILE = os.path.join(ROOT, "input.txt")
 PROXY_FILE = os.path.join(ROOT, "proxy.txt")
 OUTPUT_DIR = os.path.join(ROOT, "output")
@@ -43,7 +48,8 @@ FAILED_FILE = os.path.join(OUTPUT_DIR, "failed.txt")
 LOG_FILE = os.path.join(OUTPUT_DIR, "run.log")
 SHOTS_DIR = os.path.join(ROOT, "debug_pw")
 
-BUNDLED_PLAYWRIGHT = os.path.join(ROOT, "ms-playwright")
+BUNDLE_ROOT = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else ROOT
+BUNDLED_PLAYWRIGHT = os.path.join(BUNDLE_ROOT, "ms-playwright")
 if os.path.isdir(BUNDLED_PLAYWRIGHT):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", BUNDLED_PLAYWRIGHT)
 

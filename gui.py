@@ -16,7 +16,12 @@ from datetime import datetime
 MODULE_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, MODULE_ROOT)
 
-ROOT = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else MODULE_ROOT
+if getattr(sys, "frozen", False) and os.name == "nt":
+    ROOT = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "SMTP Unlock Tool")
+elif getattr(sys, "frozen", False):
+    ROOT = os.path.dirname(sys.executable)
+else:
+    ROOT = MODULE_ROOT
 INPUT_FILE = os.path.join(ROOT, "input.txt")
 PROXY_FILE = os.path.join(ROOT, "proxy.txt")
 OUTPUT_DIR = os.path.join(ROOT, "output")

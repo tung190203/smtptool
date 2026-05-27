@@ -11,6 +11,8 @@ import traceback
 
 def _runtime_dir():
     if getattr(sys, "frozen", False):
+        if os.name == "nt":
+            return os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "SMTP Unlock Tool")
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
