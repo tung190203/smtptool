@@ -1154,17 +1154,32 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
             captured["anchor"] = None
             action = "reload /mail/0/" if reload_page else "goto /mail/0/ (inbox only)"
             _log(action)
-            try:
-                if reload_page:
-                    page.goto("https://outlook.live.com/mail/0/",
-                              wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
+            nav_urls = ["https://outlook.live.com/mail/0/"]
+            if reload_page:
+                cache_bust = int(time.time() * 1000)
+                nav_urls = [
+                    f"https://outlook.live.com/owa/?nlp=1&path=/mail/inbox&cb={cache_bust}",
+                    f"https://outlook.live.com/mail/0/?cb={cache_bust}",
+                ]
+
+            per_step_wait = max(6, seconds // (len(nav_urls) + (1 if reload_page else 0)))
+            for nav_url in nav_urls:
+                try:
+                    page.goto(nav_url, wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
+                except Exception as exc:
+                    _log(f"inbox navigation warning: {str(exc).splitlines()[0][:160]}")
+                if wait_for_mailbox_token(per_step_wait):
+                    return True
+
+            if reload_page:
+                try:
                     page.reload(wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
-                else:
-                    page.goto("https://outlook.live.com/mail/0/",
-                              wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
-            except Exception as exc:
-                _log(f"inbox navigation warning: {str(exc).splitlines()[0][:160]}")
-            return wait_for_mailbox_token(seconds)
+                except Exception as exc:
+                    _log(f"inbox reload warning: {str(exc).splitlines()[0][:160]}")
+                if wait_for_mailbox_token(per_step_wait):
+                    return True
+
+            return wait_for_mailbox_token(max(3, seconds - per_step_wait * len(nav_urls)))
 
         def call_set_consumer_mailbox() -> dict:
             body = {
@@ -1254,7 +1269,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                         _log(f"fetch retry result: status={api_status} body={body_str[:200]}")
                 else:
                     _log("retry skipped: no fresh token captured")
-                    break
+                    continue
 
             # P1: nếu API trả 200 + WasSuccessful:true thì tin Microsoft, không verify SMTP.
             if api_status == 200 and '"WasSuccessful":true' in body_str.replace(" ", ""):
