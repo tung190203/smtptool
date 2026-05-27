@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+installer/
+*.spec
+*.exe
+*.pkg
+
+# Runtime/customer data
+input.txt
+proxy.txt
+output/
+debug_pw/
+
+# OS/editor
+.DS_Store
+Thumbs.db

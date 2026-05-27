@@ -1,0 +1,4 @@
+requests
+playwright
+# optional: if you build with PyInstaller on Windows
+pyinstaller
