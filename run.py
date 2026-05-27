@@ -109,11 +109,28 @@ CHROME_FLAGS = [
 ]
 
 write_lock = Lock()
+LOG_SINK = None
+
+
+def _emit_log(line):
+    sink = LOG_SINK
+    if sink is None:
+        return
+    try:
+        sink(str(line))
+    except Exception:
+        pass
 
 
 def safe_print(*args, **kwargs):
     try:
         print(*args, **kwargs)
+    except Exception:
+        pass
+    try:
+        line = kwargs.get("sep", " ").join(str(a) for a in args)
+        if line:
+            _emit_log(line)
     except Exception:
         pass
 
@@ -649,6 +666,7 @@ def get_smtp_token(email: str, password: str, proxy=None) -> str | None:
 # ─────────────────────────────────────────────────────────────────────────────
 def pw_log(line: str):
     print(line, flush=True)
+    _emit_log(line)
     try:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -961,6 +979,7 @@ def login_outlook(page: Page, email: str, password: str, recovery_email: str,
 def _log(m):
     line = f"  [v3] {m}"
     print(line, flush=True)
+    _emit_log(line)
     try:
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -1154,9 +1173,11 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
 #  RUNNER — input/output + thread pool
 # ─────────────────────────────────────────────────────────────────────────────
 def load_accounts():
-    """Load accounts. Support two formats per line:
+    """Load accounts. Support these formats per line:
        email|password
        email|password|recovery_email
+       email|password|refresh_token|client_id
+    For the 4-column token format, refresh_token/client_id are ignored.
     If `recovery_email` is absent, fall back to auto-generated smvmail address.
     Returns list of tuples: (email, password, recovery_email)
     """
@@ -1170,7 +1191,7 @@ def load_accounts():
             if len(parts) >= 2:
                 email = parts[0]
                 password = parts[1]
-                if len(parts) >= 3 and parts[2]:
+                if len(parts) == 3 and parts[2]:
                     rec = parts[2]
                 else:
                     # default fallback used previously
@@ -1251,7 +1272,7 @@ def main():
 
     accounts = load_accounts()
     if not accounts:
-        print("❌ input.txt rỗng hoặc không hợp lệ. Định dạng: email|password (1 dòng 1 account)")
+        print("❌ input.txt rỗng hoặc không hợp lệ. Định dạng: email|password hoặc email|password|refresh_token|client_id")
         return
 
     proxies = load_proxies()

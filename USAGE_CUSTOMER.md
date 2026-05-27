@@ -15,7 +15,10 @@ If Windows says an Application Control policy blocked the file, the machine is b
 
 ```text
 email@example.com|password
+email@example.com|password|refresh_token|client_id
 ```
+
+If your data already has `refresh_token|client_id`, keep those columns. The app accepts them but only uses `email` and `password`.
 
 2. Choose the number of threads.
 3. Click `Chạy`.

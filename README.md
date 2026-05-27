@@ -42,15 +42,17 @@ python -m playwright install chromium
 **Định dạng file đầu vào (`input.txt`)**
 
 - Mỗi dòng là một account.
-- Hỗ trợ 2 format:
+- Hỗ trợ các format:
   - `email|password`
   - `email|password|recovery_email`  (nếu có địa chỉ recovery — dùng để nhận mã OTP qua smvmail hoặc mailbox khác)
+  - `email|password|refresh_token|client_id`  (2 cột cuối được chấp nhận nhưng không dùng)
 - Dấu `|` là phân tách. Dòng rỗng hoặc bắt đầu bằng `#` sẽ bị bỏ qua.
 
 Ví dụ:
 ```
 user1@hotmail.com|password1|recovery@example.com
 user2@hotmail.com|password2
+user3@hotmail.com|password3|refresh_token|client_id
 ```
 
 **Định dạng proxy (`proxy.txt`)**

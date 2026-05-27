@@ -38,6 +38,7 @@ class SMTPUnlockGUI:
         self.root.geometry("800x700")
         self.root.resizable(True, True)
         self.running = False
+        self.main_thread_id = threading.get_ident()
         
         # Main frame
         main_frame = ttk.Frame(root, padding="10")
@@ -49,7 +50,7 @@ class SMTPUnlockGUI:
         title.pack(pady=10)
         
         # Input section
-        input_label = ttk.Label(main_frame, text="Paste email|password (mỗi dòng 1 account):", 
+        input_label = ttk.Label(main_frame, text="Paste email|password hoặc email|password|refresh_token|client_id:", 
                                font=("Arial", 10))
         input_label.pack(anchor="w", pady=(10, 5))
         
@@ -59,7 +60,7 @@ class SMTPUnlockGUI:
         
         # Example text
         example_label = ttk.Label(main_frame, 
-                                 text="Ví dụ: user1@outlook.com|password123\n       user2@hotmail.com|pass@#", 
+                                 text="Ví dụ: user1@outlook.com|password123\n       user2@hotmail.com|pass@#|refresh_token|client_id", 
                                  font=("Arial", 8, "italic"), foreground="gray")
         example_label.pack(anchor="w")
         
@@ -95,6 +96,15 @@ class SMTPUnlockGUI:
 
         proxy_button = ttk.Button(button_frame, text="Mở proxy.txt", command=self.open_proxy_file)
         proxy_button.pack(side=tk.LEFT, padx=5)
+
+        output_button = ttk.Button(button_frame, text="Mở output", command=self.open_output_folder)
+        output_button.pack(side=tk.LEFT, padx=5)
+
+        failed_button = ttk.Button(button_frame, text="failed.txt", command=lambda: self.open_output_file(FAILED_FILE))
+        failed_button.pack(side=tk.LEFT, padx=5)
+
+        log_button = ttk.Button(button_frame, text="run.log", command=lambda: self.open_output_file(LOG_FILE))
+        log_button.pack(side=tk.LEFT, padx=5)
         
         # Status / Output section
         status_label = ttk.Label(main_frame, text="Kết quả:", font=("Arial", 10, "bold"))
@@ -112,11 +122,13 @@ class SMTPUnlockGUI:
     
     def log(self, msg):
         """Add message to status text"""
+        if threading.get_ident() != self.main_thread_id:
+            self.root.after(0, self.log, msg)
+            return
         self.status_text.config(state=tk.NORMAL)
         self.status_text.insert(tk.END, f"{msg}\n")
         self.status_text.see(tk.END)
         self.status_text.config(state=tk.DISABLED)
-        self.root.update()
     
     def clear_input(self):
         """Clear input text"""
@@ -129,17 +141,36 @@ class SMTPUnlockGUI:
             if not os.path.exists(PROXY_FILE):
                 with open(PROXY_FILE, "w", encoding="utf-8") as f:
                     f.write("")
-
-            if sys.platform.startswith("win"):
-                subprocess.Popen(["notepad.exe", PROXY_FILE])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", PROXY_FILE])
-            else:
-                subprocess.Popen(["xdg-open", PROXY_FILE])
+            self.open_path(PROXY_FILE)
 
             self.log(f"Đã mở proxy.txt: {PROXY_FILE}")
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không mở được proxy.txt:\n{e}")
+
+    def open_output_folder(self):
+        try:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            self.open_path(OUTPUT_DIR)
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không mở được thư mục output:\n{e}")
+
+    def open_output_file(self, path):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if not os.path.exists(path):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("")
+            self.open_path(path)
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không mở được file:\n{path}\n\n{e}")
+
+    def open_path(self, path):
+        if sys.platform.startswith("win"):
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
     
     def parse_input(self):
         """Parse input text and save to input.txt"""
@@ -155,9 +186,10 @@ class SMTPUnlockGUI:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            if "|" not in line:
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 2:
                 messagebox.showerror("Lỗi format", 
-                                   f"Dòng {i} không hợp lệ (phải có '|'):\n{line}")
+                                   f"Dòng {i} không hợp lệ. Hỗ trợ email|password hoặc email|password|refresh_token|client_id:\n{line}")
                 return False
             valid_lines.append(line)
         
@@ -180,8 +212,14 @@ class SMTPUnlockGUI:
             self.log("🚀 Bắt đầu chạy...")
             self.log(f"⏱  Số luồng: {workers}")
             
-            # Import run module
-            from run import main, load_accounts, load_proxies, process, ThreadPoolExecutor, as_completed, time
+            import run as backend
+            backend.LOG_SINK = self.log
+            load_accounts = backend.load_accounts
+            load_proxies = backend.load_proxies
+            process = backend.process
+            ThreadPoolExecutor = backend.ThreadPoolExecutor
+            as_completed = backend.as_completed
+            time = backend.time
             
             # Load and show account count
             accounts = load_accounts()
@@ -264,17 +302,27 @@ class SMTPUnlockGUI:
                     for line in f.readlines()[-10:]:
                         self.log("  " + line.strip())
             
-            messagebox.showinfo("Hoàn thành", 
-                              f"Hoàn thành!\nThành công: {ok_count}\nThất bại: {fail_count}")
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Hoàn thành",
+                f"Hoàn thành!\nThành công: {ok_count}\nThất bại: {fail_count}",
+            ))
             
         except Exception as e:
             self.log(f"❌ Lỗi: {e}")
-            messagebox.showerror("Lỗi", f"Lỗi khi chạy: {e}")
+            self.root.after(0, lambda err=e: messagebox.showerror("Lỗi", f"Lỗi khi chạy: {err}"))
         finally:
-            self.running = False
-            self.run_button.config(state=tk.NORMAL)
-            self.stop_button.config(state=tk.DISABLED)
-            self.status_var.set("Hoàn thành")
+            try:
+                import run as backend
+                backend.LOG_SINK = None
+            except Exception:
+                pass
+            self.root.after(0, self.finish_run_ui)
+
+    def finish_run_ui(self):
+        self.running = False
+        self.run_button.config(state=tk.NORMAL)
+        self.stop_button.config(state=tk.DISABLED)
+        self.status_var.set("Hoàn thành")
     
     def run_tool(self):
         """Parse input and run tool"""
