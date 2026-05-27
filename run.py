@@ -55,7 +55,7 @@ if os.path.isdir(BUNDLED_PLAYWRIGHT):
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", BUNDLED_PLAYWRIGHT)
 
 import requests
-from requests.exceptions import Timeout, ConnectionError as ReqConnErr, RequestException
+from requests.exceptions import Timeout, ConnectionError as ReqConnErr, ProxyError, RequestException
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout, Page
 
 # ── OAuth constants ───────────────────────────────────────────────────────────
@@ -80,6 +80,11 @@ SMVMAIL_API = "https://smvmail.com/api/email"
 DEFAULT_TIMEOUT = 15000
 LOGIN_GOTO_TIMEOUT = 30000
 LOGIN_GOTO_RETRIES = 2
+INBOX_GOTO_TIMEOUT = 45000
+TOKEN_WAIT_SECONDS = 30
+OWA_INVALID_RETRY_WAIT_SECONDS = 45
+PROXY_CHECK_URL = "https://login.live.com/"
+PROXY_CHECK_TIMEOUT = (8, 15)
 
 # Idea 1: tắt screenshot trong production (đổi True để debug).
 DEBUG_SHOTS = False
@@ -191,16 +196,62 @@ def _normalize_proxy(p) -> str | None:
         user = p.get("username") or ""
         pwd = p.get("password") or ""
         if user:
+            user_q = quote(user, safe="")
+            pwd_q = quote(pwd, safe="")
             if "://" in server:
                 scheme, rest = server.split("://", 1)
-                return f"{scheme}://{user}:{pwd}@{rest}"
-            return f"http://{user}:{pwd}@{server}"
+                return f"{scheme}://{user_q}:{pwd_q}@{rest}"
+            return f"http://{user_q}:{pwd_q}@{server}"
         return server if "://" in server else f"http://{server}"
     if not isinstance(p, str):
         return None
     if "://" in p:
         return p
     return _fmt_proxy(p)
+
+
+_proxy_check_cache = {}
+_proxy_check_lock = Lock()
+
+
+def _proxy_key(proxy) -> str:
+    return _normalize_proxy(proxy) or "no-proxy"
+
+
+def check_proxy(proxy) -> tuple[bool, str]:
+    """Check proxy reachability before spending a browser session on it."""
+    if not proxy:
+        return True, "no-proxy"
+
+    key = _proxy_key(proxy)
+    with _proxy_check_lock:
+        cached = _proxy_check_cache.get(key)
+    if cached:
+        return cached
+
+    proxies = {"http": key, "https": key}
+    try:
+        r = requests.get(
+            PROXY_CHECK_URL,
+            headers={"User-Agent": UA},
+            timeout=PROXY_CHECK_TIMEOUT,
+            proxies=proxies,
+            allow_redirects=False,
+        )
+        ok = r.status_code < 500
+        result = (ok, f"proxy_check_http_{r.status_code}")
+    except ProxyError as exc:
+        result = (False, f"proxy_error: {str(exc).splitlines()[0][:180]}")
+    except Timeout:
+        result = (False, f"proxy_timeout: cannot reach {PROXY_CHECK_URL} in {PROXY_CHECK_TIMEOUT[1]}s")
+    except ReqConnErr as exc:
+        result = (False, f"proxy_connection_error: {str(exc).splitlines()[0][:180]}")
+    except RequestException as exc:
+        result = (False, f"proxy_request_error: {str(exc).splitlines()[0][:180]}")
+
+    with _proxy_check_lock:
+        _proxy_check_cache[key] = result
+    return result
 
 
 def parse_proxy(s: str):
@@ -214,7 +265,7 @@ def parse_proxy(s: str):
             user, pwd = cred.split(":", 1) if ":" in cred else (cred, "")
             return {"server": f"{scheme}://{hostport}", "username": user, "password": pwd}
         return {"server": f"{scheme}://{rest}"}
-    parts = s.split(":")
+    parts = s.split(":", 3)
     if len(parts) == 2:
         return {"server": f"http://{parts[0]}:{parts[1]}"}
     if len(parts) == 4:
@@ -1089,76 +1140,93 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
     page.on("request", on_request)
 
     try:
+        def wait_for_mailbox_token(seconds: int) -> bool:
+            deadline = time.time() + seconds
+            while time.time() < deadline:
+                if captured["token"] and captured["anchor"]:
+                    return True
+                time.sleep(0.3)
+            return bool(captured["token"] and captured["anchor"])
+
+        def goto_inbox_and_wait_token(seconds: int, *, reload_page: bool = False) -> bool:
+            captured["token"] = None
+            captured["anchor"] = None
+            action = "reload /mail/0/" if reload_page else "goto /mail/0/ (inbox only)"
+            _log(action)
+            try:
+                if reload_page:
+                    page.goto("https://outlook.live.com/mail/0/",
+                              wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
+                    page.reload(wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
+                else:
+                    page.goto("https://outlook.live.com/mail/0/",
+                              wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
+            except Exception as exc:
+                _log(f"inbox navigation warning: {str(exc).splitlines()[0][:160]}")
+            return wait_for_mailbox_token(seconds)
+
+        def call_set_consumer_mailbox() -> dict:
+            body = {
+                "__type": "SetConsumerMailboxRequest:#Exchange",
+                "Header": {
+                    "__type": "JsonRequestHeaders:#Exchange",
+                    "RequestServerVersion": "V2018_01_08",
+                },
+                "Options": {
+                    "PopEnabled": True,
+                    "PopMessageDeleteEnabled": False,
+                    "ImapEnabled": True,
+                    "SmtpClientAuthenticationDisabled": False,
+                },
+            }
+            args = {
+                "body_str": json.dumps(body),
+                "token": captured["token"],
+                "anchor": captured["anchor"] or "",
+            }
+            _log("inject fetch() qua page.evaluate")
+            return page.evaluate("""
+                async (args) => {
+                    try {
+                        const url = 'https://outlook.live.com/owa/0/service.svc?action=SetConsumerMailbox&app=Mail&n=99';
+                        const resp = await fetch(url, {
+                            method: 'POST',
+                            credentials: 'include',
+                            headers: {
+                                'Authorization': args.token,
+                                'Content-Type': 'application/json; charset=utf-8',
+                                'Action': 'SetConsumerMailbox',
+                                'x-anchormailbox': args.anchor,
+                                'x-owa-urlpostdata': encodeURIComponent(args.body_str),
+                            },
+                            body: '',
+                        });
+                        const text = await resp.text();
+                        return { status: resp.status, body: text.slice(0, 1200) };
+                    } catch (e) { return { error: e.toString() }; }
+                }
+            """, args)
+
         # Idea 4: truyền captured vào để login_outlook có thể early exit
         r = login_outlook(page, email, password, recovery_email, captured=captured)
         _log(f"login: {r}")
         if r != "ok":
-            return "login_failed"
+            return r
 
         # Idea 4: nếu token đã sniff trong login_outlook → skip goto inbox
         if captured["token"] and captured["anchor"]:
             _log("token đã capture trong login flow — skip goto inbox")
         else:
-            _log("goto /mail/0/ (inbox only)")
-            try:
-                # GIỮ "domcontentloaded" cho outlook.live.com (an toàn — đảm bảo JS init).
-                page.goto("https://outlook.live.com/mail/0/",
-                          wait_until="domcontentloaded", timeout=20000)
-            except Exception: pass
-            # P3: poll thay sleep cứng. Tối đa 12s, exit sớm nếu đã có token + anchor.
-            deadline = time.time() + 12
-            while time.time() < deadline:
-                if captured["token"] and captured["anchor"]:
-                    break
-                time.sleep(0.3)
+            goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS)
 
-        if not captured["token"]:
+        if not captured["token"] or not captured["anchor"]:
             _log("no token captured")
             return "no_token"
 
         _log(f"token: {captured['token'][:40]}...")
         _log(f"anchor: {captured['anchor']}")
 
-        body = {
-            "__type": "SetConsumerMailboxRequest:#Exchange",
-            "Header": {
-                "__type": "JsonRequestHeaders:#Exchange",
-                "RequestServerVersion": "V2018_01_08",
-            },
-            "Options": {
-                "PopEnabled": True,
-                "PopMessageDeleteEnabled": False,
-                "ImapEnabled": True,
-                "SmtpClientAuthenticationDisabled": False,
-            },
-        }
-        args = {
-            "body_str": json.dumps(body),
-            "token": captured["token"],
-            "anchor": captured["anchor"] or "",
-        }
-        _log("inject fetch() qua page.evaluate")
-        result = page.evaluate("""
-            async (args) => {
-                try {
-                    const url = 'https://outlook.live.com/owa/0/service.svc?action=SetConsumerMailbox&app=Mail&n=99';
-                    const resp = await fetch(url, {
-                        method: 'POST',
-                        credentials: 'include',
-                        headers: {
-                            'Authorization': args.token,
-                            'Content-Type': 'application/json; charset=utf-8',
-                            'Action': 'SetConsumerMailbox',
-                            'x-anchormailbox': args.anchor,
-                            'x-owa-urlpostdata': encodeURIComponent(args.body_str),
-                        },
-                        body: '',
-                    });
-                    const text = await resp.text();
-                    return { status: resp.status, body: text.slice(0, 800) };
-                } catch (e) { return { error: e.toString() }; }
-            }
-        """, args)
+        result = call_set_consumer_mailbox()
         if "error" in result:
             _log(f"fetch JS error: {result['error']}")
             api_status = "api_error"
@@ -1166,6 +1234,24 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
             api_status = result.get("status")
             body_str = (result.get("body") or "")
             _log(f"fetch result: status={api_status} body={body_str[:200]}")
+
+            if api_status == 412 or "OwaInvalid" in body_str:
+                _log("OWA invalid/session stale -> reload inbox, capture fresh token, retry API once")
+                if goto_inbox_and_wait_token(OWA_INVALID_RETRY_WAIT_SECONDS, reload_page=True):
+                    _log(f"fresh token: {captured['token'][:40]}...")
+                    _log(f"fresh anchor: {captured['anchor']}")
+                    result = call_set_consumer_mailbox()
+                    if "error" in result:
+                        _log(f"fetch retry JS error: {result['error']}")
+                        api_status = "api_error"
+                        body_str = ""
+                    else:
+                        api_status = result.get("status")
+                        body_str = (result.get("body") or "")
+                        _log(f"fetch retry result: status={api_status} body={body_str[:200]}")
+                else:
+                    _log("retry skipped: no fresh token captured")
+
             # P1: nếu API trả 200 + WasSuccessful:true thì tin Microsoft, không verify SMTP.
             if api_status == 200 and '"WasSuccessful":true' in body_str.replace(" ", ""):
                 api_was_successful = True
@@ -1266,11 +1352,19 @@ def process(item):
     safe_print(f"{prefix} ... starting", flush=True)
     wrote_reason = False
     try:
-        result = unlock_account(email, password, rec, proxy=proxy)
+        proxy_ok, proxy_reason = check_proxy(proxy)
+        if proxy:
+            _log(f"{email}: proxy precheck {proxy_reason}")
+        if not proxy_ok:
+            result = proxy_reason
+        else:
+            result = unlock_account(email, password, rec, proxy=proxy)
     except Exception as e:
         result = f"exception: {type(e).__name__}: {e}"
         if "ERR_PROXY_CONNECTION_FAILED" in str(e):
             result = "proxy_connection_failed: proxy die/sai host-port/user-pass hoặc bị mạng chặn"
+        elif "proxy_timeout" in str(e) or "proxy_error" in str(e) or "proxy_connection_error" in str(e):
+            result = str(e)
         append_line(ERROR_REASON_FILE, f"{email}|{result}")
         wrote_reason = True
         _log(f"{email}: {result}")
