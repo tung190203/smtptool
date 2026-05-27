@@ -3,7 +3,7 @@ BUILD_WINDOWS.md
 Goal: Create a distributable for Windows so customers don't need to install Python or Playwright.
 
 Important summary (simple):
-- You must build the EXE on a Windows PC. Do NOT attempt to cross-compile from macOS.
+- You must build the EXE on Windows or a Windows CI runner. Do not cross-compile from another OS.
 - Use PyInstaller in onedir mode (one-folder) to reduce runtime problems with Playwright.
 - If you do not have a Windows PC, use the included GitHub Actions workflow.
 
