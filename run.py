@@ -1149,7 +1149,10 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                 time.sleep(0.3)
             return bool(captured["token"] and captured["anchor"])
 
-        def goto_inbox_and_wait_token(seconds: int, *, reload_page: bool = False) -> bool:
+        def goto_inbox_and_wait_token(seconds: int, *, reload_page: bool = False,
+                                      preserve_existing: bool = False) -> bool:
+            previous_token = captured["token"]
+            previous_anchor = captured["anchor"]
             captured["token"] = None
             captured["anchor"] = None
             action = "reload /mail/0/" if reload_page else "goto /mail/0/ (inbox only)"
@@ -1179,7 +1182,15 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                 if wait_for_mailbox_token(per_step_wait):
                     return True
 
-            return wait_for_mailbox_token(max(3, seconds - per_step_wait * len(nav_urls)))
+            if wait_for_mailbox_token(max(3, seconds - per_step_wait * len(nav_urls))):
+                return True
+
+            if preserve_existing and previous_token and previous_anchor:
+                captured["token"] = previous_token
+                captured["anchor"] = previous_anchor
+                _log("no fresh inbox token; fallback to token captured during login")
+                return True
+            return False
 
         def call_set_consumer_mailbox() -> dict:
             body = {
@@ -1231,7 +1242,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
 
         # Always capture a fresh mailbox-context token from Outlook inbox.
         # Tokens sniffed during login can be too early and often produce 412/OwaInvalid.
-        goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS)
+        goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS, preserve_existing=True)
 
         if not captured["token"] or not captured["anchor"]:
             _log("no token captured")
@@ -1252,7 +1263,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
             retry_no = 0
             while (api_status == 412 or "OwaInvalid" in body_str) and retry_no < OWA_INVALID_MAX_RETRIES:
                 retry_no += 1
-                _log(f"OWA invalid/session stale -> reload inbox, capture fresh token, retry API {retry_no}/{OWA_INVALID_MAX_RETRIES}")
+                _log(f"Microsoft từ chối API OWA 412/OwaInvalid; tải lại Outlook và thử lại {retry_no}/{OWA_INVALID_MAX_RETRIES}")
                 if goto_inbox_and_wait_token(OWA_INVALID_RETRY_WAIT_SECONDS, reload_page=True):
                     _log(f"fresh token: {captured['token'][:40]}...")
                     _log(f"fresh anchor: {captured['anchor']}")
@@ -1268,7 +1279,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                         body_str = (result.get("body") or "")
                         _log(f"fetch retry result: status={api_status} body={body_str[:200]}")
                 else:
-                    _log("retry skipped: no fresh token captured")
+                    _log("Không bắt được token Outlook mới sau khi tải lại; thử lại vòng tiếp theo nếu còn lượt")
                     continue
 
             # P1: nếu API trả 200 + WasSuccessful:true thì tin Microsoft, không verify SMTP.
@@ -1301,6 +1312,9 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
         return "unlocked"
 
     if isinstance(api_status, int) and api_status not in (200, 204):
+        if api_status == 412:
+            _log("Kết luận: Microsoft vẫn từ chối bật SMTP qua OWA API (412/OwaInvalid). Có thể mailbox/account chưa sẵn sàng, bị checkpoint, hoặc cần login thủ công vào Outlook trước.")
+            return "Microsoft từ chối bật SMTP qua OWA API (412/OwaInvalid) - thử login Outlook thủ công rồi chạy lại"
         return f"api_failed_{api_status}"
     return "still_blocked"
 
