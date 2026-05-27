@@ -1201,14 +1201,21 @@ def load_accounts():
 
 
 def load_proxies():
-    if not os.path.exists(PROXY_FILE): return []
+    if not os.path.exists(PROXY_FILE):
+        safe_print(f"Proxy file: {PROXY_FILE} (not found)")
+        return []
     proxies = []
+    invalid = 0
     with open(PROXY_FILE, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"): continue
             p = parse_proxy(line)
-            if p: proxies.append(p)
+            if p:
+                proxies.append(p)
+            else:
+                invalid += 1
+    safe_print(f"Proxy file: {PROXY_FILE} ({len(proxies)} valid, {invalid} invalid)")
     return proxies
 
 
@@ -1231,6 +1238,8 @@ def process(item):
         result = unlock_account(email, password, rec, proxy=proxy)
     except Exception as e:
         result = f"exception: {type(e).__name__}: {e}"
+        if "ERR_PROXY_CONNECTION_FAILED" in str(e):
+            result = "proxy_connection_failed: proxy die/sai host-port/user-pass hoặc bị mạng chặn"
         append_line(ERROR_REASON_FILE, f"{email}|{result}")
         wrote_reason = True
         _log(f"{email}: {result}")

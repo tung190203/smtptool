@@ -211,6 +211,8 @@ class SMTPUnlockGUI:
         try:
             self.log("🚀 Bắt đầu chạy...")
             self.log(f"⏱  Số luồng: {workers}")
+            self.log(f"📄 Input: {INPUT_FILE}")
+            self.log(f"🌐 Proxy file: {PROXY_FILE}")
             
             import run as backend
             backend.LOG_SINK = self.log
