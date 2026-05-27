@@ -10,6 +10,7 @@ import threading
 import os
 import sys
 import json
+import subprocess
 from datetime import datetime
 
 # Import từ run.py
@@ -90,6 +91,9 @@ class SMTPUnlockGUI:
         
         clear_button = ttk.Button(button_frame, text="🗑 Xoá", command=self.clear_input)
         clear_button.pack(side=tk.LEFT, padx=5)
+
+        proxy_button = ttk.Button(button_frame, text="Mở proxy.txt", command=self.open_proxy_file)
+        proxy_button.pack(side=tk.LEFT, padx=5)
         
         # Status / Output section
         status_label = ttk.Label(main_frame, text="Kết quả:", font=("Arial", 10, "bold"))
@@ -116,6 +120,25 @@ class SMTPUnlockGUI:
     def clear_input(self):
         """Clear input text"""
         self.input_text.delete("1.0", tk.END)
+
+    def open_proxy_file(self):
+        """Open proxy.txt with the platform default editor."""
+        try:
+            os.makedirs(ROOT, exist_ok=True)
+            if not os.path.exists(PROXY_FILE):
+                with open(PROXY_FILE, "w", encoding="utf-8") as f:
+                    f.write("")
+
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["notepad.exe", PROXY_FILE])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", PROXY_FILE])
+            else:
+                subprocess.Popen(["xdg-open", PROXY_FILE])
+
+            self.log(f"Đã mở proxy.txt: {PROXY_FILE}")
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không mở được proxy.txt:\n{e}")
     
     def parse_input(self):
         """Parse input text and save to input.txt"""
