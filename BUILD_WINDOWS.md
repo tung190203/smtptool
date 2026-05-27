@@ -8,12 +8,22 @@ Important summary (simple):
 - If you do not have a Windows PC, use the included GitHub Actions workflow.
 
 Build without a Windows PC:
+
+Option A - GitHub Actions:
 1. Push this project to GitHub.
 2. Open the repo on GitHub.
 3. Go to `Actions` -> `Build Windows Installer`.
 4. Click `Run workflow`.
 5. When the run finishes, download the `SMTP_Unlock_Setup` artifact.
 6. Unzip the artifact and send `SMTP_Unlock_Setup.exe` to the customer.
+
+Option B - AppVeyor, useful if GitHub Actions is blocked by billing:
+1. Keep the GitHub repo public.
+2. Sign in at appveyor.com with GitHub.
+3. Add/import the `smtptool` GitHub repo.
+4. AppVeyor will read `appveyor.yml` and build on Windows.
+5. Download the `SMTP_Unlock_Setup` artifact from the AppVeyor build.
+6. Send `SMTP_Unlock_Setup.exe` to the customer.
 
 Quick steps (tested workflow):
 1. On a Windows machine with Python 3.8+ installed, open PowerShell and go to the project folder.
