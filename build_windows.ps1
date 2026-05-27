@@ -42,7 +42,7 @@ Write-Host "  .\dist\smtp_unlock\smtp_unlock.exe"
 try {
     $pwCache = Join-Path $env:USERPROFILE "AppData\\Local\\ms-playwright"
     $distDir = Join-Path "dist" "smtp_unlock"
-    if (Test-Path $pwCache -and Test-Path $distDir) {
+    if ((Test-Path $pwCache) -and (Test-Path $distDir)) {
         Write-Host "== Copying Playwright browser runtime from $pwCache to $distDir\\ms-playwright =="
         robocopy $pwCache (Join-Path $distDir "ms-playwright") /E /NFL /NDL /NJH /NJS /nc /ns | Out-Null
         Write-Host "== Copy complete =="

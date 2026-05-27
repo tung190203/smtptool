@@ -45,6 +45,7 @@ PROXY_FILE = os.path.join(ROOT, "proxy.txt")
 OUTPUT_DIR = os.path.join(ROOT, "output")
 ENABLED_FILE = os.path.join(OUTPUT_DIR, "enabled.txt")
 FAILED_FILE = os.path.join(OUTPUT_DIR, "failed.txt")
+ERROR_REASON_FILE = os.path.join(OUTPUT_DIR, "error_reason.txt")
 LOG_FILE = os.path.join(OUTPUT_DIR, "run.log")
 SHOTS_DIR = os.path.join(ROOT, "debug_pw")
 
@@ -957,7 +958,15 @@ def login_outlook(page: Page, email: str, password: str, recovery_email: str,
 # ─────────────────────────────────────────────────────────────────────────────
 #  ORCHESTRATOR — flow mới: KHÔNG baseline check
 # ─────────────────────────────────────────────────────────────────────────────
-def _log(m): print(f"  [v3] {m}", flush=True)
+def _log(m):
+    line = f"  [v3] {m}"
+    print(line, flush=True)
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -> str:
@@ -1184,6 +1193,7 @@ def load_proxies():
 
 def append_line(path, line):
     with write_lock:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
@@ -1195,10 +1205,14 @@ def process(item):
     proxy_label = proxy["server"] if proxy else "no-proxy"
     prefix = f"[{idx}/{total}] {email}  ({proxy_label})"
     safe_print(f"{prefix} ... starting", flush=True)
+    wrote_reason = False
     try:
         result = unlock_account(email, password, rec, proxy=proxy)
     except Exception as e:
-        result = f"exception: {e}"
+        result = f"exception: {type(e).__name__}: {e}"
+        append_line(ERROR_REASON_FILE, f"{email}|{result}")
+        wrote_reason = True
+        _log(f"{email}: {result}")
 
     if result == "unlocked":
         # SMTP đã bật xong. Giờ lấy refresh_token để ghi file.
@@ -1224,13 +1238,15 @@ def process(item):
     else:
         # Failed format: KHÔNG có lý do (theo yêu cầu user)
         append_line(FAILED_FILE, f"{email}|{password}")
+        if not wrote_reason:
+            append_line(ERROR_REASON_FILE, f"{email}|{result}")
         safe_print(f"❌ {prefix} -> {result}", flush=True)
         return False
 
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    for f in (ENABLED_FILE, FAILED_FILE):
+    for f in (ENABLED_FILE, FAILED_FILE, ERROR_REASON_FILE, LOG_FILE):
         if os.path.exists(f): os.remove(f)
 
     accounts = load_accounts()

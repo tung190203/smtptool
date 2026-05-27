@@ -28,6 +28,7 @@ PROXY_FILE = os.path.join(ROOT, "proxy.txt")
 OUTPUT_DIR = os.path.join(ROOT, "output")
 ENABLED_FILE = os.path.join(OUTPUT_DIR, "enabled.txt")
 FAILED_FILE = os.path.join(OUTPUT_DIR, "failed.txt")
+ERROR_REASON_FILE = os.path.join(OUTPUT_DIR, "error_reason.txt")
 LOG_FILE = os.path.join(OUTPUT_DIR, "run.log")
 
 class SMTPUnlockGUI:
@@ -190,7 +191,7 @@ class SMTPUnlockGUI:
                 return
 
             os.makedirs(OUTPUT_DIR, exist_ok=True)
-            for path in (ENABLED_FILE, FAILED_FILE, LOG_FILE):
+            for path in (ENABLED_FILE, FAILED_FILE, ERROR_REASON_FILE, LOG_FILE):
                 if os.path.exists(path):
                     os.remove(path)
             
@@ -256,6 +257,12 @@ class SMTPUnlockGUI:
                 with open(FAILED_FILE, "r", encoding="utf-8") as f:
                     failed_count = len(f.readlines())
                 self.log(f"📄 Thất bại lưu vào: output/failed.txt ({failed_count} account)")
+
+            if os.path.exists(ERROR_REASON_FILE):
+                self.log("\nLý do thất bại:")
+                with open(ERROR_REASON_FILE, "r", encoding="utf-8") as f:
+                    for line in f.readlines()[-10:]:
+                        self.log("  " + line.strip())
             
             messagebox.showinfo("Hoàn thành", 
                               f"Hoàn thành!\nThành công: {ok_count}\nThất bại: {fail_count}")
