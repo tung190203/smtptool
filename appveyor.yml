@@ -13,9 +13,8 @@ install:
   - ps: choco install innosetup -y
 
 build_script:
-  - ps: Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-  - ps: .\build_windows.ps1
-  - ps: .\inno_build.ps1 -SkipBuild
+  - ps: powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
+  - ps: powershell -ExecutionPolicy Bypass -File .\inno_build.ps1 -SkipBuild
   - ps: Compress-Archive -Path dist\smtp_unlock -DestinationPath SMTP_Unlock_App_Folder.zip -Force
 
 artifacts:
