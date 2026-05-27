@@ -30,7 +30,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, local as thread_local
 from queue import Queue
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stdout is not None:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
