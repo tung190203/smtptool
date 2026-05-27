@@ -81,8 +81,9 @@ DEFAULT_TIMEOUT = 15000
 LOGIN_GOTO_TIMEOUT = 30000
 LOGIN_GOTO_RETRIES = 2
 INBOX_GOTO_TIMEOUT = 45000
-TOKEN_WAIT_SECONDS = 30
-OWA_INVALID_RETRY_WAIT_SECONDS = 45
+TOKEN_WAIT_SECONDS = 45
+OWA_INVALID_RETRY_WAIT_SECONDS = 60
+OWA_INVALID_MAX_RETRIES = 2
 PROXY_CHECK_URL = "https://login.live.com/"
 PROXY_CHECK_TIMEOUT = (8, 15)
 
@@ -1213,11 +1214,9 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
         if r != "ok":
             return r
 
-        # Idea 4: nếu token đã sniff trong login_outlook → skip goto inbox
-        if captured["token"] and captured["anchor"]:
-            _log("token đã capture trong login flow — skip goto inbox")
-        else:
-            goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS)
+        # Always capture a fresh mailbox-context token from Outlook inbox.
+        # Tokens sniffed during login can be too early and often produce 412/OwaInvalid.
+        goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS)
 
         if not captured["token"] or not captured["anchor"]:
             _log("no token captured")
@@ -1235,22 +1234,27 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
             body_str = (result.get("body") or "")
             _log(f"fetch result: status={api_status} body={body_str[:200]}")
 
-            if api_status == 412 or "OwaInvalid" in body_str:
-                _log("OWA invalid/session stale -> reload inbox, capture fresh token, retry API once")
+            retry_no = 0
+            while (api_status == 412 or "OwaInvalid" in body_str) and retry_no < OWA_INVALID_MAX_RETRIES:
+                retry_no += 1
+                _log(f"OWA invalid/session stale -> reload inbox, capture fresh token, retry API {retry_no}/{OWA_INVALID_MAX_RETRIES}")
                 if goto_inbox_and_wait_token(OWA_INVALID_RETRY_WAIT_SECONDS, reload_page=True):
                     _log(f"fresh token: {captured['token'][:40]}...")
                     _log(f"fresh anchor: {captured['anchor']}")
+                    time.sleep(2)
                     result = call_set_consumer_mailbox()
                     if "error" in result:
                         _log(f"fetch retry JS error: {result['error']}")
                         api_status = "api_error"
                         body_str = ""
+                        break
                     else:
                         api_status = result.get("status")
                         body_str = (result.get("body") or "")
                         _log(f"fetch retry result: status={api_status} body={body_str[:200]}")
                 else:
                     _log("retry skipped: no fresh token captured")
+                    break
 
             # P1: nếu API trả 200 + WasSuccessful:true thì tin Microsoft, không verify SMTP.
             if api_status == 200 and '"WasSuccessful":true' in body_str.replace(" ", ""):
