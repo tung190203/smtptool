@@ -1085,7 +1085,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
     safe_print(f"  Unlock SMTP for {email}")
     safe_print('='*80)
 
-    captured = {"token": None, "anchor": None}
+    captured = {"token": None, "anchor": None, "canary": None}
 
     def on_request(req):
         if "service.svc" in req.url and "action=" in req.url:
@@ -1094,6 +1094,8 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                 captured["token"] = h["authorization"]
             if "x-anchormailbox" in h:
                 captured["anchor"] = h["x-anchormailbox"]
+            if "x-owa-canary" in h:
+                captured["canary"] = h["x-owa-canary"]
 
     api_status = None
     api_was_successful = False  # P1: flag để skip SMTP verify nếu API trả WasSuccessful=true
@@ -1141,20 +1143,22 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
     page.on("request", on_request)
 
     try:
-        def wait_for_mailbox_token(seconds: int) -> bool:
+        def wait_for_mailbox_context(seconds: int) -> bool:
             deadline = time.time() + seconds
             while time.time() < deadline:
-                if captured["token"] and captured["anchor"]:
+                if captured["anchor"] and captured["canary"]:
                     return True
                 time.sleep(0.3)
-            return bool(captured["token"] and captured["anchor"])
+            return bool(captured["anchor"] and captured["canary"])
 
         def goto_inbox_and_wait_token(seconds: int, *, reload_page: bool = False,
                                       preserve_existing: bool = False) -> bool:
             previous_token = captured["token"]
             previous_anchor = captured["anchor"]
+            previous_canary = captured["canary"]
             captured["token"] = None
             captured["anchor"] = None
+            captured["canary"] = None
             action = "reload /mail/0/" if reload_page else "goto /mail/0/ (inbox only)"
             _log(action)
             nav_urls = ["https://outlook.live.com/mail/0/"]
@@ -1171,7 +1175,7 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                     page.goto(nav_url, wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
                 except Exception as exc:
                     _log(f"inbox navigation warning: {str(exc).splitlines()[0][:160]}")
-                if wait_for_mailbox_token(per_step_wait):
+                if wait_for_mailbox_context(per_step_wait):
                     return True
 
             if reload_page:
@@ -1179,16 +1183,17 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                     page.reload(wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
                 except Exception as exc:
                     _log(f"inbox reload warning: {str(exc).splitlines()[0][:160]}")
-                if wait_for_mailbox_token(per_step_wait):
+                if wait_for_mailbox_context(per_step_wait):
                     return True
 
-            if wait_for_mailbox_token(max(3, seconds - per_step_wait * len(nav_urls))):
+            if wait_for_mailbox_context(max(3, seconds - per_step_wait * len(nav_urls))):
                 return True
 
-            if preserve_existing and previous_token and previous_anchor:
+            if preserve_existing and previous_anchor and previous_canary:
                 captured["token"] = previous_token
                 captured["anchor"] = previous_anchor
-                _log("no fresh inbox token; fallback to token captured during login")
+                captured["canary"] = previous_canary
+                _log("Không bắt được OWA canary mới; dùng lại OWA context đã bắt được trong lúc login")
                 return True
             return False
 
@@ -1208,25 +1213,28 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
             }
             args = {
                 "body_str": json.dumps(body),
-                "token": captured["token"],
                 "anchor": captured["anchor"] or "",
+                "canary": captured["canary"] or "",
             }
-            _log("inject fetch() qua page.evaluate")
+            _log("inject fetch() qua page.evaluate với JSON body + X-OWA-Canary")
             return page.evaluate("""
                 async (args) => {
                     try {
                         const url = 'https://outlook.live.com/owa/0/service.svc?action=SetConsumerMailbox&app=Mail&n=99';
+                        const headers = {
+                            'Content-Type': 'application/json; charset=utf-8',
+                            'Action': 'SetConsumerMailbox',
+                            'x-anchormailbox': args.anchor,
+                            'X-Requested-With': 'XMLHttpRequest'
+                        };
+                        if (args.canary) {
+                            headers['X-OWA-Canary'] = args.canary;
+                        }
                         const resp = await fetch(url, {
                             method: 'POST',
                             credentials: 'include',
-                            headers: {
-                                'Authorization': args.token,
-                                'Content-Type': 'application/json; charset=utf-8',
-                                'Action': 'SetConsumerMailbox',
-                                'x-anchormailbox': args.anchor,
-                                'x-owa-urlpostdata': encodeURIComponent(args.body_str),
-                            },
-                            body: '',
+                            headers,
+                            body: args.body_str,
                         });
                         const text = await resp.text();
                         return { status: resp.status, body: text.slice(0, 1200) };
@@ -1244,12 +1252,14 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
         # Tokens sniffed during login can be too early and often produce 412/OwaInvalid.
         goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS, preserve_existing=True)
 
-        if not captured["token"] or not captured["anchor"]:
-            _log("no token captured")
-            return "no_token"
+        if not captured["anchor"] or not captured["canary"]:
+            _log("Không bắt được đủ OWA context (x-anchormailbox + X-OWA-Canary)")
+            return "Không bắt được OWA canary/context - Outlook chưa load đủ hoặc account bị checkpoint"
 
-        _log(f"token: {captured['token'][:40]}...")
+        if captured["token"]:
+            _log(f"token: {captured['token'][:40]}...")
         _log(f"anchor: {captured['anchor']}")
+        _log(f"canary: {captured['canary'][:24]}...")
 
         result = call_set_consumer_mailbox()
         if "error" in result:
@@ -1265,8 +1275,10 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                 retry_no += 1
                 _log(f"Microsoft từ chối API OWA 412/OwaInvalid; tải lại Outlook và thử lại {retry_no}/{OWA_INVALID_MAX_RETRIES}")
                 if goto_inbox_and_wait_token(OWA_INVALID_RETRY_WAIT_SECONDS, reload_page=True):
-                    _log(f"fresh token: {captured['token'][:40]}...")
+                    if captured["token"]:
+                        _log(f"fresh token: {captured['token'][:40]}...")
                     _log(f"fresh anchor: {captured['anchor']}")
+                    _log(f"fresh canary: {captured['canary'][:24]}...")
                     time.sleep(2)
                     result = call_set_consumer_mailbox()
                     if "error" in result:
