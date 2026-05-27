@@ -5,7 +5,7 @@
 AppName=SMTP Unlock Tool
 AppVersion=1.0
 AppPublisher=SMTP Unlock Tool
-DefaultDirName={autopf}\SMTP Unlock Tool
+DefaultDirName={localappdata}\SMTP Unlock Tool
 DefaultGroupName=SMTP Unlock Tool
 DisableProgramGroupPage=yes
 WizardStyle=modern
@@ -13,6 +13,7 @@ OutputDir=installer
 OutputBaseFilename=SMTP_Unlock_Setup
 Compression=lzma
 SolidCompression=yes
+PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\smtp_unlock_gui.exe
 
 [Files]
