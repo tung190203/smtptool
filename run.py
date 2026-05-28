@@ -1458,6 +1458,30 @@ def append_line(path, line):
             f.write(line + "\n")
 
 
+def get_refresh_token_with_retry(email: str, password: str, proxy=None):
+    attempts = [("proxy", proxy), ("proxy", proxy)]
+    if proxy:
+        attempts.append(("no-proxy", None))
+
+    last_reason = "unknown"
+    for attempt_no, (label, attempt_proxy) in enumerate(attempts, start=1):
+        _log(f"lấy refresh_token ({label}, lần {attempt_no}/{len(attempts)})...")
+        try:
+            oauth = run_oauth(email, password, proxy=attempt_proxy)
+        except Exception as exc:
+            last_reason = f"{type(exc).__name__}: {str(exc)[:180]}"
+            _log(f"refresh_token exception: {last_reason}")
+            oauth = None
+
+        if oauth and oauth.get("refresh_token"):
+            return oauth["refresh_token"], label, None
+
+        last_reason = "oauth_no_refresh_token"
+        time.sleep(2)
+
+    return None, None, last_reason
+
+
 def process(item):
     # item: (idx, total, email, password, recovery_email, proxy)
     idx, total, email, password, recovery_email, proxy = item
@@ -1493,24 +1517,16 @@ def process(item):
 
     if result == "unlocked":
         # SMTP đã bật xong. Giờ lấy refresh_token để ghi file.
-        # Logic: thử lấy refresh tối đa 2 lần. KHÔNG đợi giữa các lần.
-        _log("lấy refresh_token (lần 1)...")
-        oauth = run_oauth(email, password, proxy=proxy)
-
-        if not (oauth and oauth.get("refresh_token")):
-            # Lần 1 fail → retry NGAY (không đợi)
-            _log("lần 1 fail, retry lấy refresh_token (lần 2)...")
-            oauth = run_oauth(email, password, proxy=proxy)
-
-        if oauth and oauth.get("refresh_token"):
-            fresh_refresh = oauth["refresh_token"]
+        fresh_refresh, refresh_via, refresh_error = get_refresh_token_with_retry(email, password, proxy=proxy)
+        if fresh_refresh:
             append_line(ENABLED_FILE, f"{email}|{password}|{fresh_refresh}|{CLIENT_ID}")
-            safe_print(f"✅ {prefix} -> {result} (refresh ok)", flush=True)
+            safe_print(f"✅ {prefix} -> {result} (refresh ok via {refresh_via})", flush=True)
             return True
         else:
-            # Cả 2 lần đều fail → ghi failed.txt
+            reason = f"unlocked_but_refresh_failed: {refresh_error}"
             append_line(FAILED_FILE, f"{email}|{password}")
-            safe_print(f"❌ {prefix} -> {result} nhung refresh fail 2 lan", flush=True)
+            append_line(ERROR_REASON_FILE, f"{email}|{reason}")
+            safe_print(f"❌ {prefix} -> {result} nhưng refresh fail ({refresh_error})", flush=True)
             return False
     else:
         # Failed format: KHÔNG có lý do (theo yêu cầu user)
