@@ -12,6 +12,7 @@ import sys
 import json
 import subprocess
 from datetime import datetime
+from collections import Counter
 
 # Import từ run.py
 MODULE_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +30,7 @@ OUTPUT_DIR = os.path.join(ROOT, "output")
 ENABLED_FILE = os.path.join(OUTPUT_DIR, "enabled.txt")
 FAILED_FILE = os.path.join(OUTPUT_DIR, "failed.txt")
 ERROR_REASON_FILE = os.path.join(OUTPUT_DIR, "error_reason.txt")
+UNLOCKED_FILE = os.path.join(OUTPUT_DIR, "unlocked.txt")
 LIVE_FILE = os.path.join(OUTPUT_DIR, "live.txt")
 DEAD_FILE = os.path.join(OUTPUT_DIR, "dead.txt")
 LIVE_REASON_FILE = os.path.join(OUTPUT_DIR, "live_reason.txt")
@@ -111,6 +113,9 @@ class SMTPUnlockGUI:
 
         live_button = ttk.Button(button_frame, text="live.txt", command=lambda: self.open_output_file(LIVE_FILE))
         live_button.pack(side=tk.LEFT, padx=5)
+
+        unlocked_button = ttk.Button(button_frame, text="unlocked.txt", command=lambda: self.open_output_file(UNLOCKED_FILE))
+        unlocked_button.pack(side=tk.LEFT, padx=5)
 
         log_button = ttk.Button(button_frame, text="run.log", command=lambda: self.open_output_file(LOG_FILE))
         log_button.pack(side=tk.LEFT, padx=5)
@@ -281,7 +286,7 @@ class SMTPUnlockGUI:
                 return
 
             os.makedirs(OUTPUT_DIR, exist_ok=True)
-            for path in (ENABLED_FILE, FAILED_FILE, ERROR_REASON_FILE, LOG_FILE):
+            for path in (ENABLED_FILE, FAILED_FILE, ERROR_REASON_FILE, UNLOCKED_FILE, LOG_FILE):
                 if os.path.exists(path):
                     os.remove(path)
             
@@ -295,7 +300,7 @@ class SMTPUnlockGUI:
                 self.log(f"🌐 Không có proxy (chạy IP gốc)")
             
             def worker(item):
-                idx, total, em, pw, rec, p = item
+                idx, total, em, pw = item[0], item[1], item[2], item[3]
                 try:
                     return process(item)
                 except Exception as e:
@@ -303,8 +308,8 @@ class SMTPUnlockGUI:
                     return False
             
             items = [
-                (i + 1, len(accounts), em, pw, rec, proxies[i % len(proxies)] if proxies else None)
-                for i, (em, pw, rec) in enumerate(accounts)
+                (i + 1, len(accounts), em, pw, rec, refresh, client_id, proxies[i % len(proxies)] if proxies else None)
+                for i, (em, pw, rec, refresh, client_id) in enumerate(accounts)
             ]
             ok_count = 0
             fail_count = 0
@@ -329,12 +334,17 @@ class SMTPUnlockGUI:
             self.log(f"⏱  Thời gian:   {elapsed:.1f}s")
             self.log(f"📁 Output:   {OUTPUT_DIR}")
             self.log("="*60)
+
+            if os.path.exists(UNLOCKED_FILE):
+                with open(UNLOCKED_FILE, "r", encoding="utf-8") as f:
+                    unlocked_count = len(f.readlines())
+                self.log(f"\n📄 Đã bật SMTP lưu vào: output/unlocked.txt ({unlocked_count} account)")
             
             # Show results summary
             if os.path.exists(ENABLED_FILE):
                 with open(ENABLED_FILE, "r", encoding="utf-8") as f:
                     enabled_count = len(f.readlines())
-                self.log(f"\n📄 Thành công lưu vào: output/enabled.txt ({enabled_count} account)")
+                self.log(f"📄 Có refresh token lưu vào: output/enabled.txt ({enabled_count} account)")
             
             if os.path.exists(FAILED_FILE):
                 with open(FAILED_FILE, "r", encoding="utf-8") as f:
@@ -342,7 +352,18 @@ class SMTPUnlockGUI:
                 self.log(f"📄 Thất bại lưu vào: output/failed.txt ({failed_count} account)")
 
             if os.path.exists(ERROR_REASON_FILE):
-                self.log("\nLý do thất bại:")
+                reasons = []
+                with open(ERROR_REASON_FILE, "r", encoding="utf-8") as f:
+                    for line in f:
+                        reason = line.strip().split("|", 1)[1] if "|" in line else line.strip()
+                        if reason:
+                            reasons.append(reason)
+
+                self.log("\nTop lý do fail:")
+                for reason, count in Counter(reasons).most_common(8):
+                    self.log(f"  {count}x {reason[:120]}")
+
+                self.log("\nLý do thất bại gần nhất:")
                 with open(ERROR_REASON_FILE, "r", encoding="utf-8") as f:
                     for line in f.readlines()[-10:]:
                         self.log("  " + line.strip())

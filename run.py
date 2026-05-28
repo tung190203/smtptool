@@ -46,6 +46,7 @@ OUTPUT_DIR = os.path.join(ROOT, "output")
 ENABLED_FILE = os.path.join(OUTPUT_DIR, "enabled.txt")
 FAILED_FILE = os.path.join(OUTPUT_DIR, "failed.txt")
 ERROR_REASON_FILE = os.path.join(OUTPUT_DIR, "error_reason.txt")
+UNLOCKED_FILE = os.path.join(OUTPUT_DIR, "unlocked.txt")
 LIVE_FILE = os.path.join(OUTPUT_DIR, "live.txt")
 DEAD_FILE = os.path.join(OUTPUT_DIR, "dead.txt")
 LIVE_REASON_FILE = os.path.join(OUTPUT_DIR, "live_reason.txt")
@@ -1450,9 +1451,9 @@ def load_accounts():
        email|password
        email|password|recovery_email
        email|password|refresh_token|client_id
-    For the 4-column token format, refresh_token/client_id are ignored.
+    For the 4-column token format, refresh_token/client_id are preserved.
     If `recovery_email` is absent, fall back to auto-generated smvmail address.
-    Returns list of tuples: (email, password, recovery_email)
+    Returns list of tuples: (email, password, recovery_email, refresh_token, client_id)
     """
     rows = []
     with open(INPUT_FILE, encoding="utf-8") as f:
@@ -1464,12 +1465,18 @@ def load_accounts():
             if len(parts) >= 2:
                 email = parts[0]
                 password = parts[1]
+                refresh_token = ""
+                client_id = ""
                 if len(parts) == 3 and parts[2]:
                     rec = parts[2]
+                elif len(parts) >= 4:
+                    rec = email.split("@")[0] + "@smvmail.com"
+                    refresh_token = parts[2]
+                    client_id = parts[3]
                 else:
                     # default fallback used previously
                     rec = email.split("@")[0] + "@smvmail.com"
-                rows.append((email, password, rec))
+                rows.append((email, password, rec, refresh_token, client_id))
     return rows
 
 
@@ -1524,8 +1531,13 @@ def get_refresh_token_with_retry(email: str, password: str, proxy=None):
 
 
 def process(item):
-    # item: (idx, total, email, password, recovery_email, proxy)
-    idx, total, email, password, recovery_email, proxy = item
+    # item: (idx, total, email, password, recovery_email, refresh_token, client_id, proxy)
+    if len(item) >= 8:
+        idx, total, email, password, recovery_email, input_refresh, input_client_id, proxy = item
+    else:
+        idx, total, email, password, recovery_email, proxy = item
+        input_refresh = ""
+        input_client_id = ""
     rec = recovery_email
     proxy_label = proxy["server"] if proxy else "no-proxy"
     prefix = f"[{idx}/{total}] {email}  ({proxy_label})"
@@ -1557,7 +1569,23 @@ def process(item):
         _log(f"{email}: {result}")
 
     if result == "unlocked":
-        # SMTP đã bật xong. Giờ lấy refresh_token để ghi file.
+        append_line(UNLOCKED_FILE, f"{email}|{password}")
+
+        # Nếu input đã có refresh_token thì ưu tiên dùng lại, tránh login OAuth thêm lần nữa.
+        if input_refresh:
+            ok, tok_or_reason = refresh_for_scope(
+                input_refresh,
+                SCOPE_SMTP_ONLY,
+                proxy=proxy,
+                client_id=input_client_id or CLIENT_ID,
+            )
+            if ok:
+                append_line(ENABLED_FILE, f"{email}|{password}|{input_refresh}|{input_client_id or CLIENT_ID}")
+                safe_print(f"✅ {prefix} -> {result} (dùng refresh_token có sẵn)", flush=True)
+                return True
+            _log(f"{email}: refresh_token input không dùng được: {tok_or_reason}")
+
+        # SMTP đã bật xong. Giờ lấy refresh_token để ghi file enabled.txt.
         fresh_refresh, refresh_via, refresh_error = get_refresh_token_with_retry(email, password, proxy=proxy)
         if fresh_refresh:
             append_line(ENABLED_FILE, f"{email}|{password}|{fresh_refresh}|{CLIENT_ID}")
@@ -1565,10 +1593,9 @@ def process(item):
             return True
         else:
             reason = f"unlocked_but_refresh_failed: {refresh_error}"
-            append_line(FAILED_FILE, f"{email}|{password}")
             append_line(ERROR_REASON_FILE, f"{email}|{reason}")
-            safe_print(f"❌ {prefix} -> {result} nhưng refresh fail ({refresh_error})", flush=True)
-            return False
+            safe_print(f"✅ {prefix} -> {result} nhưng chưa lấy được refresh ({refresh_error})", flush=True)
+            return True
     else:
         # Failed format: KHÔNG có lý do (theo yêu cầu user)
         append_line(FAILED_FILE, f"{email}|{password}")
@@ -1580,7 +1607,7 @@ def process(item):
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    for f in (ENABLED_FILE, FAILED_FILE, ERROR_REASON_FILE, LOG_FILE):
+    for f in (ENABLED_FILE, FAILED_FILE, ERROR_REASON_FILE, UNLOCKED_FILE, LOG_FILE):
         if os.path.exists(f): os.remove(f)
 
     accounts = load_accounts()
@@ -1657,8 +1684,8 @@ def main():
     ok_count = 0
     fail_count = 0
     items = [
-        (i + 1, len(accounts), em, pw, rec, proxies[i % len(proxies)] if proxies else None)
-        for i, (em, pw, rec) in enumerate(accounts)
+        (i + 1, len(accounts), em, pw, rec, refresh, client_id, proxies[i % len(proxies)] if proxies else None)
+        for i, (em, pw, rec, refresh, client_id) in enumerate(accounts)
     ]
 
     with ThreadPoolExecutor(max_workers=workers) as ex:

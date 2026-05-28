@@ -67,6 +67,7 @@ user3@hotmail.com|password3|refresh_token|client_id
 
 - Thư mục `output/` được tạo ra khi chạy.
   - `output/enabled.txt` — chứa các account đã bật SMTP thành công. Format: `email|password|refresh_token|client_id`.
+  - `output/unlocked.txt` — account đã bật SMTP thành công, kể cả khi chưa lấy được refresh token mới.
   - `output/failed.txt` — các account thất bại. Format: `email|password`.
   - `output/live.txt` — kết quả từ nút `Check live` trong GUI, chứa account/token SMTP đang live.
   - `output/dead.txt` — account check live thất bại.
