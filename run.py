@@ -734,14 +734,14 @@ def get_smtp_token(email: str, password: str, proxy=None) -> str | None:
 
 def check_live_account(email: str, password: str, recovery_email: str = "",
                        refresh_token: str = "", client_id: str = "",
-                       proxy=None) -> tuple[bool, str, str]:
+                       proxy=None, use_refresh_token: bool = True) -> tuple[bool, str, str]:
     """Check account/SMTP readiness without changing mailbox settings.
 
     Returns: (is_live, reason, refresh_token_to_save)
-    - 4-column input uses the supplied refresh_token/client_id first.
+    - 4-column input uses the supplied refresh_token/client_id first unless use_refresh_token is False.
     - 2/3-column input falls back to OAuth login, then SMTP XOAUTH2 verify.
     """
-    if refresh_token:
+    if refresh_token and use_refresh_token:
         ok, tok = refresh_for_scope(
             refresh_token,
             SCOPE_SMTP_ONLY,
@@ -1607,8 +1607,18 @@ def process(item):
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    for f in (ENABLED_FILE, FAILED_FILE, ERROR_REASON_FILE, UNLOCKED_FILE, LOG_FILE):
-        if os.path.exists(f): os.remove(f)
+    for f in (
+        ENABLED_FILE,
+        FAILED_FILE,
+        ERROR_REASON_FILE,
+        UNLOCKED_FILE,
+        LIVE_FILE,
+        DEAD_FILE,
+        LIVE_REASON_FILE,
+        LOG_FILE,
+    ):
+        if os.path.exists(f):
+            os.remove(f)
 
     accounts = load_accounts()
     if not accounts:

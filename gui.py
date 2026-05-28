@@ -84,6 +84,14 @@ class SMTPUnlockGUI:
         worker_hint = ttk.Label(worker_frame, text="(2-8 khuyên dùng)", 
                                font=("Arial", 8, "italic"), foreground="gray")
         worker_hint.pack(side=tk.LEFT, padx=5)
+
+        self.ignore_refresh_var = tk.BooleanVar(value=False)
+        ignore_refresh_chk = ttk.Checkbutton(
+            worker_frame,
+            text="Không dùng refresh_token khi Check live",
+            variable=self.ignore_refresh_var,
+        )
+        ignore_refresh_chk.pack(side=tk.RIGHT, padx=5)
         
         # Buttons
         button_frame = ttk.Frame(main_frame)
@@ -384,10 +392,11 @@ class SMTPUnlockGUI:
                 pass
             self.root.after(0, self.finish_run_ui)
 
-    def check_live_thread(self, workers, accounts):
+    def check_live_thread(self, workers, accounts, ignore_refresh=False):
         try:
             self.log("✓ Bắt đầu check live...")
             self.log(f"⏱  Số luồng: {workers}")
+            self.log(f"🔧 Không dùng refresh_token: {ignore_refresh}")
 
             import run as backend
             backend.LOG_SINK = self.log
@@ -432,6 +441,7 @@ class SMTPUnlockGUI:
                         refresh_token=acc["refresh_token"],
                         client_id=acc["client_id"],
                         proxy=proxy,
+                        use_refresh_token=not ignore_refresh,
                     )
                     if ok:
                         if refresh_token:
@@ -556,7 +566,12 @@ class SMTPUnlockGUI:
         self.status_text.config(state=tk.DISABLED)
         self.status_var.set("Check live...")
 
-        thread = threading.Thread(target=self.check_live_thread, args=(workers, accounts), daemon=True)
+        ignore_refresh = self.ignore_refresh_var.get()
+        thread = threading.Thread(
+            target=self.check_live_thread,
+            args=(workers, accounts, ignore_refresh),
+            daemon=True,
+        )
         thread.start()
     
     def stop_tool(self):
