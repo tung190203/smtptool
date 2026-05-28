@@ -46,6 +46,9 @@ OUTPUT_DIR = os.path.join(ROOT, "output")
 ENABLED_FILE = os.path.join(OUTPUT_DIR, "enabled.txt")
 FAILED_FILE = os.path.join(OUTPUT_DIR, "failed.txt")
 ERROR_REASON_FILE = os.path.join(OUTPUT_DIR, "error_reason.txt")
+LIVE_FILE = os.path.join(OUTPUT_DIR, "live.txt")
+DEAD_FILE = os.path.join(OUTPUT_DIR, "dead.txt")
+LIVE_REASON_FILE = os.path.join(OUTPUT_DIR, "live_reason.txt")
 LOG_FILE = os.path.join(OUTPUT_DIR, "run.log")
 SHOTS_DIR = os.path.join(ROOT, "debug_pw")
 
@@ -726,6 +729,44 @@ def get_smtp_token(email: str, password: str, proxy=None) -> str | None:
     ok, tok = refresh_for_scope(r["refresh_token"], SCOPE_SMTP_ONLY, proxy=proxy)
     if not ok: return None
     return tok
+
+
+def check_live_account(email: str, password: str, recovery_email: str = "",
+                       refresh_token: str = "", client_id: str = "",
+                       proxy=None) -> tuple[bool, str, str]:
+    """Check account/SMTP readiness without changing mailbox settings.
+
+    Returns: (is_live, reason, refresh_token_to_save)
+    - 4-column input uses the supplied refresh_token/client_id first.
+    - 2/3-column input falls back to OAuth login, then SMTP XOAUTH2 verify.
+    """
+    if refresh_token:
+        ok, tok = refresh_for_scope(
+            refresh_token,
+            SCOPE_SMTP_ONLY,
+            proxy=proxy,
+            client_id=client_id or CLIENT_ID,
+        )
+        if not ok:
+            return False, tok, ""
+        code, msg = test_smtp(email, tok)
+        if code == 235:
+            return True, "smtp_live", refresh_token
+        return False, f"smtp_failed_{code}: {msg[:120]}", ""
+
+    oauth = run_oauth(email, password, proxy=proxy)
+    if not oauth or not oauth.get("refresh_token"):
+        return False, "oauth_login_failed", ""
+
+    fresh_refresh = oauth["refresh_token"]
+    ok, tok = refresh_for_scope(fresh_refresh, SCOPE_SMTP_ONLY, proxy=proxy)
+    if not ok:
+        return False, tok, ""
+
+    code, msg = test_smtp(email, tok)
+    if code == 235:
+        return True, "smtp_live", fresh_refresh
+    return False, f"smtp_failed_{code}: {msg[:120]}", ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────

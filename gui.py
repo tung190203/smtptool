@@ -29,6 +29,9 @@ OUTPUT_DIR = os.path.join(ROOT, "output")
 ENABLED_FILE = os.path.join(OUTPUT_DIR, "enabled.txt")
 FAILED_FILE = os.path.join(OUTPUT_DIR, "failed.txt")
 ERROR_REASON_FILE = os.path.join(OUTPUT_DIR, "error_reason.txt")
+LIVE_FILE = os.path.join(OUTPUT_DIR, "live.txt")
+DEAD_FILE = os.path.join(OUTPUT_DIR, "dead.txt")
+LIVE_REASON_FILE = os.path.join(OUTPUT_DIR, "live_reason.txt")
 LOG_FILE = os.path.join(OUTPUT_DIR, "run.log")
 
 class SMTPUnlockGUI:
@@ -86,6 +89,9 @@ class SMTPUnlockGUI:
         
         self.run_button = ttk.Button(button_frame, text="▶ Chạy", command=self.run_tool)
         self.run_button.pack(side=tk.LEFT, padx=5)
+
+        self.check_button = ttk.Button(button_frame, text="✓ Check live", command=self.check_live)
+        self.check_button.pack(side=tk.LEFT, padx=5)
         
         self.stop_button = ttk.Button(button_frame, text="⏹ Dừng", command=self.stop_tool, 
                                       state=tk.DISABLED)
@@ -102,6 +108,9 @@ class SMTPUnlockGUI:
 
         failed_button = ttk.Button(button_frame, text="failed.txt", command=lambda: self.open_output_file(FAILED_FILE))
         failed_button.pack(side=tk.LEFT, padx=5)
+
+        live_button = ttk.Button(button_frame, text="live.txt", command=lambda: self.open_output_file(LIVE_FILE))
+        live_button.pack(side=tk.LEFT, padx=5)
 
         log_button = ttk.Button(button_frame, text="run.log", command=lambda: self.open_output_file(LOG_FILE))
         log_button.pack(side=tk.LEFT, padx=5)
@@ -205,6 +214,47 @@ class SMTPUnlockGUI:
         
         self.log(f"✓ Parse xong: {len(valid_lines)} account")
         return True
+
+    def parse_check_accounts(self):
+        """Parse input textbox for live check, preserving optional token columns."""
+        content = self.input_text.get("1.0", tk.END).strip()
+        if not content:
+            messagebox.showerror("Lỗi", "Vui lòng paste email|password vào text box.")
+            return None
+
+        accounts = []
+        for i, raw_line in enumerate(content.splitlines(), 1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 2:
+                messagebox.showerror("Lỗi format", f"Dòng {i} không hợp lệ:\n{line}")
+                return None
+
+            email = parts[0]
+            password = parts[1]
+            recovery_email = ""
+            refresh_token = ""
+            client_id = ""
+            if len(parts) >= 4:
+                refresh_token = parts[2]
+                client_id = parts[3]
+            elif len(parts) == 3:
+                recovery_email = parts[2]
+            accounts.append({
+                "line": line,
+                "email": email,
+                "password": password,
+                "recovery_email": recovery_email,
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            })
+
+        if not accounts:
+            messagebox.showerror("Lỗi", "Không tìm thấy account hợp lệ.")
+            return None
+        return accounts
     
     def run_tool_thread(self, workers):
         """Run tool in background thread"""
@@ -313,9 +363,118 @@ class SMTPUnlockGUI:
                 pass
             self.root.after(0, self.finish_run_ui)
 
+    def check_live_thread(self, workers, accounts):
+        try:
+            self.log("✓ Bắt đầu check live...")
+            self.log(f"⏱  Số luồng: {workers}")
+
+            import run as backend
+            backend.LOG_SINK = self.log
+            load_proxies = backend.load_proxies
+            check_live_account = backend.check_live_account
+            append_line = backend.append_line
+            ThreadPoolExecutor = backend.ThreadPoolExecutor
+            as_completed = backend.as_completed
+            time = backend.time
+
+            proxies = load_proxies()
+            if proxies:
+                self.log(f"🌐 Proxies: {len(proxies)}")
+                if workers > len(proxies):
+                    self.log(f"ℹ Có {len(proxies)} proxy nên giảm từ {workers} xuống {len(proxies)} luồng.")
+                    workers = len(proxies)
+            else:
+                self.log("🌐 Không có proxy (chạy IP gốc)")
+
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            for path in (LIVE_FILE, DEAD_FILE, LIVE_REASON_FILE, LOG_FILE):
+                if os.path.exists(path):
+                    os.remove(path)
+
+            def worker(item):
+                idx, total, acc, proxy = item
+                email = acc["email"]
+                proxy_label = proxy["server"] if proxy else "no-proxy"
+                self.log(f"[{idx}/{total}] {email} ({proxy_label}) check...")
+                try:
+                    proxy_ok, proxy_reason = backend.check_proxy(proxy)
+                    if proxy and not proxy_ok:
+                        append_line(DEAD_FILE, f"{email}|{acc['password']}")
+                        append_line(LIVE_REASON_FILE, f"{email}|{proxy_reason}")
+                        self.log(f"❌ [{idx}/{total}] {email} -> {proxy_reason}")
+                        return False
+
+                    ok, reason, refresh_token = check_live_account(
+                        email,
+                        acc["password"],
+                        recovery_email=acc["recovery_email"],
+                        refresh_token=acc["refresh_token"],
+                        client_id=acc["client_id"],
+                        proxy=proxy,
+                    )
+                    if ok:
+                        if refresh_token:
+                            append_line(LIVE_FILE, f"{email}|{acc['password']}|{refresh_token}|{acc['client_id'] or backend.CLIENT_ID}")
+                        else:
+                            append_line(LIVE_FILE, acc["line"])
+                        self.log(f"✅ [{idx}/{total}] {email} -> live")
+                        return True
+
+                    append_line(DEAD_FILE, f"{email}|{acc['password']}")
+                    append_line(LIVE_REASON_FILE, f"{email}|{reason}")
+                    self.log(f"❌ [{idx}/{total}] {email} -> {reason}")
+                    return False
+                except Exception as e:
+                    reason = f"{type(e).__name__}: {e}"
+                    append_line(DEAD_FILE, f"{email}|{acc['password']}")
+                    append_line(LIVE_REASON_FILE, f"{email}|{reason}")
+                    self.log(f"❌ [{idx}/{total}] {email} lỗi kỹ thuật: {reason}")
+                    return False
+
+            items = [
+                (i + 1, len(accounts), acc, proxies[i % len(proxies)] if proxies else None)
+                for i, acc in enumerate(accounts)
+            ]
+            live_count = 0
+            dead_count = 0
+            t0 = time.time()
+
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futures = [ex.submit(worker, item) for item in items]
+                for f in as_completed(futures):
+                    if f.result():
+                        live_count += 1
+                    else:
+                        dead_count += 1
+
+            elapsed = time.time() - t0
+            self.log("\n" + "="*60)
+            self.log(f"✅ Live: {live_count}/{len(accounts)}")
+            self.log(f"❌ Dead/Fail: {dead_count}/{len(accounts)}")
+            self.log(f"⏱  Thời gian: {elapsed:.1f}s")
+            self.log(f"📄 Live: output/live.txt")
+            self.log(f"📄 Dead: output/dead.txt")
+            self.log("="*60)
+
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Check live xong",
+                f"Live: {live_count}\nDead/Fail: {dead_count}",
+            ))
+        except Exception as e:
+            self.log(f"❌ Lỗi check live: {e}")
+            self.root.after(0, lambda err=e: messagebox.showerror("Lỗi", f"Lỗi khi check live: {err}"))
+        finally:
+            try:
+                import run as backend
+                backend.LOG_SINK = None
+            except Exception:
+                pass
+            self.root.after(0, self.finish_run_ui)
+
     def finish_run_ui(self):
         self.running = False
         self.run_button.config(state=tk.NORMAL)
+        self.check_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         self.status_var.set("Hoàn thành")
     
@@ -338,6 +497,7 @@ class SMTPUnlockGUI:
         
         self.running = True
         self.run_button.config(state=tk.DISABLED)
+        self.check_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
         self.status_text.config(state=tk.NORMAL)
         self.status_text.delete("1.0", tk.END)
@@ -347,11 +507,42 @@ class SMTPUnlockGUI:
         # Run in background thread
         thread = threading.Thread(target=self.run_tool_thread, args=(workers,), daemon=True)
         thread.start()
+
+    def check_live(self):
+        """Check live before running unlock."""
+        if self.running:
+            messagebox.showwarning("Cảnh báo", "Tool đang chạy, vui lòng chờ.")
+            return
+
+        accounts = self.parse_check_accounts()
+        if not accounts:
+            return
+
+        try:
+            workers = int(self.worker_var.get())
+            if workers < 1:
+                workers = 1
+        except ValueError:
+            messagebox.showerror("Lỗi", "Số luồng phải là số nguyên.")
+            return
+
+        self.running = True
+        self.run_button.config(state=tk.DISABLED)
+        self.check_button.config(state=tk.DISABLED)
+        self.stop_button.config(state=tk.NORMAL)
+        self.status_text.config(state=tk.NORMAL)
+        self.status_text.delete("1.0", tk.END)
+        self.status_text.config(state=tk.DISABLED)
+        self.status_var.set("Check live...")
+
+        thread = threading.Thread(target=self.check_live_thread, args=(workers, accounts), daemon=True)
+        thread.start()
     
     def stop_tool(self):
         """Stop tool (graceful)"""
         self.running = False
         self.run_button.config(state=tk.NORMAL)
+        self.check_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         self.status_var.set("Đã dừng")
         self.log("\n⏹ Đã dừng (accounts còn lại sẽ hủy)")

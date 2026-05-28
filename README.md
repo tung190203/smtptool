@@ -68,8 +68,18 @@ user3@hotmail.com|password3|refresh_token|client_id
 - Thư mục `output/` được tạo ra khi chạy.
   - `output/enabled.txt` — chứa các account đã bật SMTP thành công. Format: `email|password|refresh_token|client_id`.
   - `output/failed.txt` — các account thất bại. Format: `email|password`.
+  - `output/live.txt` — kết quả từ nút `Check live` trong GUI, chứa account/token SMTP đang live.
+  - `output/dead.txt` — account check live thất bại.
+  - `output/live_reason.txt` — lý do chi tiết khi check live thất bại.
   - `output/run.log` — log chạy chi tiết (append).
 - Thư mục `debug_pw/` (tuỳ chọn) chứa screenshot khi `DEBUG_SHOTS = True`.
+
+**Check live trước khi chạy**
+
+- Trên GUI có nút `Check live` để kiểm tra trước khi bấm `Chạy`.
+- Với input `email|password|refresh_token|client_id`, tool đổi refresh token sang SMTP scope rồi test XOAUTH2.
+- Với input `email|password` hoặc `email|password|recovery_email`, tool chạy OAuth để lấy refresh token rồi test SMTP XOAUTH2.
+- Check live không gọi API bật SMTP/IMAP/POP, chỉ kiểm tra trạng thái đăng nhập/token và SMTP hiện tại.
 
 **Luồng xử lý (mỗi account)**
 
