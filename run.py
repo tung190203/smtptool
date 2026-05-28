@@ -86,6 +86,7 @@ OWA_INVALID_RETRY_WAIT_SECONDS = 60
 OWA_INVALID_MAX_RETRIES = 2
 PROXY_CHECK_URL = "https://login.live.com/"
 PROXY_CHECK_TIMEOUT = (8, 15)
+RETRY_NO_PROXY_ON_PROXY_CHECKPOINT = True
 
 # Idea 1: tắt screenshot trong production (đổi True để debug).
 DEBUG_SHOTS = False
@@ -217,6 +218,18 @@ _proxy_check_lock = Lock()
 
 def _proxy_key(proxy) -> str:
     return _normalize_proxy(proxy) or "no-proxy"
+
+
+def is_proxy_checkpoint_result(result) -> bool:
+    """Detect Microsoft risk/checkpoint paths that are commonly proxy-specific."""
+    text = str(result or "").lower()
+    return (
+        "account.live.com/abuse" in text
+        or "không vào outlook.live.com" in text
+        or "khong vao outlook.live.com" in text
+        or "không bắt được outlook mailbox context" in text
+        or "khong bat duoc outlook mailbox context" in text
+    )
 
 
 def check_proxy(proxy) -> tuple[bool, str]:
@@ -1461,6 +1474,13 @@ def process(item):
             result = proxy_reason
         else:
             result = unlock_account(email, password, rec, proxy=proxy)
+            if proxy and RETRY_NO_PROXY_ON_PROXY_CHECKPOINT and is_proxy_checkpoint_result(result):
+                _log(f"{email}: proxy bị Microsoft checkpoint/Abuse ({result}); retry 1 lần bằng IP gốc")
+                no_proxy_result = unlock_account(email, password, rec, proxy=None)
+                if no_proxy_result == "unlocked":
+                    result = no_proxy_result
+                else:
+                    result = f"{result} | retry_no_proxy={no_proxy_result}"
     except Exception as e:
         result = f"exception: {type(e).__name__}: {e}"
         if "ERR_PROXY_CONNECTION_FAILED" in str(e):
@@ -1551,52 +1571,27 @@ def main():
         if workers < 1:
             print("  Số luồng phải >= 1.")
             continue
-        # Info messages về tỉ lệ proxy:worker (không block flow, không clamp)
+        # Khi dùng proxy, không chạy nhiều phiên cùng 1 proxy tại cùng thời điểm.
         if proxies:
             if workers > len(proxies):
-                ratio = workers / len(proxies)
-                print(f"  ℹ {workers} luồng chia sẻ {len(proxies)} proxy "
-                      f"(~{ratio:.1f} luồng/proxy, round-robin).")
+                print(f"  ℹ Có {len(proxies)} proxy nên giảm từ {workers} xuống {len(proxies)} luồng "
+                      f"để tránh share proxy cùng lúc.")
+                workers = len(proxies)
             elif workers < len(proxies):
                 print(f"  ℹ {workers} luồng — {workers} proxy đầu được dùng, "
                       f"{len(proxies) - workers} proxy còn lại bỏ qua.")
             else:
-                print(f"  ℹ {workers} luồng = {len(proxies)} proxy (1:1 mapping).")
+                print(f"  ℹ {workers} luồng = {len(proxies)} proxy (không share proxy cùng lúc).")
         else:
             print(f"  ℹ Không có proxy — tất cả {workers} luồng chạy IP gốc.")
         break
 
-    # SHARED PROXY POOL — round-robin distribution.
-    # Mỗi worker call get_proxy() → trả 1 proxy từ list theo round-robin.
-    # Không "lock" proxy, không remove khỏi pool. Nhiều worker dùng cùng proxy OK.
-    proxy_counter = [0]  # mutable container để có thể tăng trong closure
-    proxy_pool_lock = Lock()
-
-    def get_proxy():
-        """Round-robin trả proxy SHARED. Trả None nếu không có proxy nào."""
-        if not proxies:
-            return None
-        with proxy_pool_lock:
-            idx = proxy_counter[0] % len(proxies)
-            proxy_counter[0] += 1
-        return proxies[idx]
-
-    def return_proxy(p):
-        """No-op — proxy không bị 'chiếm' nên không cần trả."""
-        pass
-
-    def worker(item_no_proxy):
-        # item_no_proxy: (idx, total, email, password, recovery_email)
-        idx, total, em, pw, rec = item_no_proxy
-        p = get_proxy()
-        try:
-            return process((idx, total, em, pw, rec, p))
-        finally:
-            return_proxy(p)
+    def worker(item):
+        return process(item)
 
     # Shared proxy info
     if proxies:
-        proxy_info = f" qua {len(proxies)} proxy (shared, round-robin)"
+        proxy_info = f" qua {len(proxies)} proxy (1 phiên/proxy, có retry IP gốc nếu bị Abuse)"
     else:
         proxy_info = " (IP gốc — không có proxy)"
     print(f"\n🚀 Bắt đầu unlock {len(accounts)} accounts với {workers} luồng{proxy_info}...\n")
@@ -1604,7 +1599,10 @@ def main():
     t0 = time.time()
     ok_count = 0
     fail_count = 0
-    items = [(i + 1, len(accounts), em, pw, rec) for i, (em, pw, rec) in enumerate(accounts)]
+    items = [
+        (i + 1, len(accounts), em, pw, rec, proxies[i % len(proxies)] if proxies else None)
+        for i, (em, pw, rec) in enumerate(accounts)
+    ]
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         # Idea 7: pre-warm browser cho mỗi worker thread trước khi xử lý account.

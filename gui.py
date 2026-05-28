@@ -238,31 +238,24 @@ class SMTPUnlockGUI:
             self.log(f"📋 Accounts: {len(accounts)}")
             if proxies:
                 self.log(f"🌐 Proxies: {len(proxies)}")
+                if workers > len(proxies):
+                    self.log(f"ℹ Có {len(proxies)} proxy nên giảm từ {workers} xuống {len(proxies)} luồng để tránh share proxy cùng lúc.")
+                    workers = len(proxies)
             else:
                 self.log(f"🌐 Không có proxy (chạy IP gốc)")
             
-            # Round-robin proxy assignment
-            proxy_counter = [0]
-            proxy_pool_lock = __import__('threading').Lock()
-            
-            def get_proxy():
-                if not proxies:
-                    return None
-                with proxy_pool_lock:
-                    idx = proxy_counter[0] % len(proxies)
-                    proxy_counter[0] += 1
-                return proxies[idx]
-            
-            def worker(item_no_proxy):
-                idx, total, em, pw, rec = item_no_proxy
-                p = get_proxy()
+            def worker(item):
+                idx, total, em, pw, rec, p = item
                 try:
-                    return process((idx, total, em, pw, rec, p))
+                    return process(item)
                 except Exception as e:
                     self.log(f"❌ [{idx}/{total}] {em} lỗi kỹ thuật: {type(e).__name__}: {e}")
                     return False
             
-            items = [(i + 1, len(accounts), em, pw, rec) for i, (em, pw, rec) in enumerate(accounts)]
+            items = [
+                (i + 1, len(accounts), em, pw, rec, proxies[i % len(proxies)] if proxies else None)
+                for i, (em, pw, rec) in enumerate(accounts)
+            ]
             ok_count = 0
             fail_count = 0
             
