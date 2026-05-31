@@ -55,7 +55,9 @@ class SMTPUnlockGUI:
         title.pack(pady=10)
         
         # Input section
-        input_label = ttk.Label(main_frame, text="Paste email|password hoặc email|password|refresh_token|client_id:", 
+        input_label = ttk.Label(
+            main_frame,
+            text="Paste email|password|mkp (mail khôi phục) hoặc email|password|refresh_token|client_id:",
                                font=("Arial", 10))
         input_label.pack(anchor="w", pady=(10, 5))
         
@@ -65,7 +67,7 @@ class SMTPUnlockGUI:
         
         # Example text
         example_label = ttk.Label(main_frame, 
-                                 text="Ví dụ: user1@outlook.com|password123\n       user2@hotmail.com|pass@#|refresh_token|client_id", 
+                                 text="Ví dụ: user1@outlook.com|password123|user1@smvmail.com\n       user2@hotmail.com|pass@#|refresh_token|client_id",
                                  font=("Arial", 8, "italic"), foreground="gray")
         example_label.pack(anchor="w")
         
@@ -198,7 +200,7 @@ class SMTPUnlockGUI:
         """Parse input text and save to input.txt"""
         content = self.input_text.get("1.0", tk.END).strip()
         if not content:
-            messagebox.showerror("Lỗi", "Vui lòng paste email|password vào text box.")
+            messagebox.showerror("Lỗi", "Vui lòng paste email|password|mkp vào text box.")
             return False
         
         lines = content.split("\n")
@@ -211,7 +213,7 @@ class SMTPUnlockGUI:
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 2:
                 messagebox.showerror("Lỗi format", 
-                                   f"Dòng {i} không hợp lệ. Hỗ trợ email|password hoặc email|password|refresh_token|client_id:\n{line}")
+                                   f"Dòng {i} không hợp lệ. Hỗ trợ email|password|mkp hoặc email|password|refresh_token|client_id:\n{line}")
                 return False
             valid_lines.append(line)
         
@@ -232,7 +234,7 @@ class SMTPUnlockGUI:
         """Parse input textbox for live check, preserving optional token columns."""
         content = self.input_text.get("1.0", tk.END).strip()
         if not content:
-            messagebox.showerror("Lỗi", "Vui lòng paste email|password vào text box.")
+            messagebox.showerror("Lỗi", "Vui lòng paste email|password|mkp vào text box.")
             return None
 
         accounts = []

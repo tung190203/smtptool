@@ -17,7 +17,7 @@ Flow per account:
        SMTP fail    → still_blocked / smtp_token_failed
 
 Cách dùng:
-    1. Sửa input.txt format: email|password[|recovery_email] (1 dòng 1 account)
+    1. Sửa input.txt format: email|password|mkp (1 dòng 1 account)
   2. (Tùy chọn) Sửa proxy.txt — 1 proxy/dòng
   3. python run.py
   4. Nhập số luồng
@@ -80,6 +80,13 @@ MAX_RETRIES = 2
 
 # ── Playwright + smvmail ──────────────────────────────────────────────────────
 SMVMAIL_API = "https://smvmail.com/api/email"
+OTP_MAIL_DOMAINS = {
+    "smvmail.com",
+    "meomail.site",
+    "totoson.shop",
+    "fviainboxes.com",
+    "moakt.com",
+}
 # Idea 6: giảm timeout default từ 45s → 15s (fail-fast trên error path).
 DEFAULT_TIMEOUT = 15000
 LOGIN_GOTO_TIMEOUT = 30000
@@ -846,25 +853,48 @@ def extract_code(doc: dict) -> str | None:
     return None
 
 
+def otp_api_urls_for_email(email: str) -> list[str]:
+    domain = email.rsplit("@", 1)[1].lower() if "@" in email else ""
+    urls = []
+    if domain in OTP_MAIL_DOMAINS:
+        urls.append(f"https://{domain}/api/email")
+    if SMVMAIL_API not in urls:
+        urls.append(SMVMAIL_API)
+    return urls
+
+
 def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
-    """Poll smvmail.com API tới khi có mail mới sau since_ts."""
+    """Poll API mail free tới khi có mail mới sau since_ts.
+
+    `email` là full mail khôi phục/mkp, ví dụ user@smvmail.com hoặc domain
+    free tương ứng trong site lấy OTP.
+    """
     deadline = time.time() + timeout
     accept_ts = since_ts - 30
-    pw_log(f"    [smv] poll {email}  since={since_ts:.1f}  timeout={timeout}s")
+    api_urls = otp_api_urls_for_email(email)
+    pw_log(
+        f"    [otp-mail] poll {email}  since={since_ts:.1f}  "
+        f"timeout={timeout}s api={api_urls[0]}"
+    )
     while time.time() < deadline:
-        try:
-            r = requests.get(SMVMAIL_API, params={"email": email, "page": 1},
-                              timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-            docs = r.json().get("data", {}).get("docs", []) if r.status_code == 200 else []
-        except Exception:
-            docs = []
-        for d in docs:
-            created_ts = _parse_iso_ts(d.get("createdAt", ""))
-            if created_ts < accept_ts: continue
-            code = extract_code(d)
-            if code:
-                pw_log(f"    [smv] found code {code}  at {d.get('createdAt')}")
-                return code
+        for api_url in api_urls:
+            try:
+                r = requests.get(
+                    api_url,
+                    params={"email": email, "page": 1},
+                    timeout=15,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                docs = r.json().get("data", {}).get("docs", []) if r.status_code == 200 else []
+            except Exception:
+                docs = []
+            for d in docs:
+                created_ts = _parse_iso_ts(d.get("createdAt", ""))
+                if created_ts < accept_ts: continue
+                code = extract_code(d)
+                if code:
+                    pw_log(f"    [otp-mail] found code {code} via {api_url} at {d.get('createdAt')}")
+                    return code
         time.sleep(3)
     return None
 
@@ -896,7 +926,7 @@ def handle_verify_email_page(page: Page, recovery_email: str) -> str:
 
     code = poll_smvmail(recovery_email, send_ts, timeout=150)
     if not code:
-        return "smvmail no code"
+        return "otp mail no code"
 
     try:
         # Idea 9: giảm timeout 10s → 6s
@@ -1034,7 +1064,7 @@ def login_outlook(page: Page, email: str, password: str, recovery_email: str,
         try:
             t = page.locator('text=/Verify your email/i').first
             if t.is_visible(timeout=1000):
-                pw_log("  [login] gặp 'Verify your email' — handle bằng smvmail")
+                pw_log("  [login] gặp 'Verify your email' — handle bằng mail khôi phục")
                 r = handle_verify_email_page(page, recovery_email)
                 if r != "ok": return f"verify_email: {r}"
                 # đợi page chuyển tiếp (verify xong → password page) — Idea 9, 10
@@ -1449,10 +1479,11 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
 def load_accounts():
     """Load accounts. Support these formats per line:
        email|password
-       email|password|recovery_email
+       email|password|mkp
        email|password|refresh_token|client_id
     For the 4-column token format, refresh_token/client_id are preserved.
-    If `recovery_email` is absent, fall back to auto-generated smvmail address.
+    `mkp` is the full recovery email used to receive OTP.
+    If `mkp` is absent, fall back to auto-generated smvmail address.
     Returns list of tuples: (email, password, recovery_email, refresh_token, client_id)
     """
     rows = []
@@ -1622,7 +1653,7 @@ def main():
 
     accounts = load_accounts()
     if not accounts:
-        print("❌ input.txt rỗng hoặc không hợp lệ. Định dạng: email|password hoặc email|password|refresh_token|client_id")
+        print("❌ input.txt rỗng hoặc không hợp lệ. Định dạng: email|password|mkp hoặc email|password|refresh_token|client_id")
         return
 
     proxies = load_proxies()

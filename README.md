@@ -21,7 +21,7 @@ Tài liệu này mô tả chức năng, cách sử dụng, định dạng file v
 
 **Tính năng chính**
 
-- Tự động đăng nhập MSA (Microsoft Account) bằng Playwright, xử lý trang "Verify your email" bằng smvmail (nếu cung cấp recovery email).
+- Tự động đăng nhập MSA (Microsoft Account) bằng Playwright, xử lý trang "Verify your email" bằng mail khôi phục/mkp nếu cung cấp.
 - Sniff header request (service.svc) để lấy MSAuth1.0 token và header `x-anchormailbox`.
 - Thực thi fetch() trong context trang để gọi `SetConsumerMailbox` và bật `SmtpClientAuthenticationDisabled = false`.
 - Nếu API không trả xác nhận rõ ràng, tiến hành luồng OAuth để lấy access token scope SMTP và kiểm tra kết nối SMTP thực tế (XOAUTH2) lên `smtp-mail.outlook.com` hoặc `smtp.office365.com`.
@@ -44,13 +44,13 @@ python -m playwright install chromium
 - Mỗi dòng là một account.
 - Hỗ trợ các format:
   - `email|password`
-  - `email|password|recovery_email`  (nếu có địa chỉ recovery — dùng để nhận mã OTP qua smvmail hoặc mailbox khác)
+  - `email|password|mkp`  (mkp là full mail khôi phục dùng để nhận OTP, ví dụ `user@smvmail.com`)
   - `email|password|refresh_token|client_id`  (2 cột cuối được chấp nhận nhưng không dùng)
 - Dấu `|` là phân tách. Dòng rỗng hoặc bắt đầu bằng `#` sẽ bị bỏ qua.
 
 Ví dụ:
 ```
-user1@hotmail.com|password1|recovery@example.com
+user1@hotmail.com|password1|user1@smvmail.com
 user2@hotmail.com|password2
 user3@hotmail.com|password3|refresh_token|client_id
 ```
@@ -79,7 +79,7 @@ user3@hotmail.com|password3|refresh_token|client_id
 
 - Trên GUI có nút `Check live` để kiểm tra trước khi bấm `Chạy`.
 - Với input `email|password|refresh_token|client_id`, tool đổi refresh token sang SMTP scope rồi test XOAUTH2.
-- Với input `email|password` hoặc `email|password|recovery_email`, tool chạy OAuth để lấy refresh token rồi test SMTP XOAUTH2.
+- Với input `email|password` hoặc `email|password|mkp`, tool chạy OAuth để lấy refresh token rồi test SMTP XOAUTH2.
 - Check live không gọi API bật SMTP/IMAP/POP, chỉ kiểm tra trạng thái đăng nhập/token và SMTP hiện tại.
 
 **Luồng xử lý (mỗi account)**
@@ -87,7 +87,7 @@ user3@hotmail.com|password3|refresh_token|client_id
 1. Lấy proxy (nếu có) từ pool (round-robin). Browser được pre-warm và chia sẻ cho mỗi thread; proxy gán ở context-level.
 2. Dùng Playwright mở trang login.force URL (login.live.com → redirect sang outlook).
 3. Điền email → password, xử lý các bước bổ sung:
-   - "Verify your email" → điền `recovery_email` (từ input hoặc auto `username@smvmail.com`), poll smvmail API để lấy code, điền code.
+   - "Verify your email" → điền `mkp` (từ input hoặc auto `username@smvmail.com`), poll mail free để lấy code, điền code.
    - KMSI / Consent / Skip page → click tự động nếu có.
 4. Khi vào được `outlook.live.com` (hoặc khi script sniff ra request chứa `service.svc` có header `Authorization: MSAuth1.0` và `x-anchormailbox`), inject `fetch()` gọi `SetConsumerMailbox` với body bật SMTP/IMAP/POP.
 5. Nếu API trả `WasSuccessful=true` → fast path: ghi là `unlocked` và thử lấy refresh_token để lưu vào `enabled.txt`.
@@ -102,7 +102,7 @@ user3@hotmail.com|password3|refresh_token|client_id
 
 **Các hàm/khối quan trọng (tóm tắt)**
 
-- `load_accounts()` — đọc `input.txt`, trả list `(email, password, recovery_email)`.
+- `load_accounts()` — đọc `input.txt`, trả list `(email, password, mkp)`.
 - `load_proxies()` — đọc `proxy.txt`, trả list proxy dict.
 - `_get_thread_browser()` — khởi tạo và cache browser instance cho mỗi thread.
 - `GraphAuth` — class thực hiện flow OAuth (authorization_code) bằng HTTP requests (dùng để lấy refresh token nếu cần).
@@ -116,7 +116,7 @@ user3@hotmail.com|password3|refresh_token|client_id
 **Vấn đề hay gặp & khắc phục**
 
 - Rate Limit / 429: Giảm tốc độ, sử dụng proxy pool, giảm số luồng.
-- Không nhận được code từ smvmail: kiểm tra `recovery_email` đúng định dạng hoặc tăng timeout poll.
+- Không nhận được code từ mail free: kiểm tra `mkp` đúng full email và đúng domain site lấy OTP, hoặc tăng timeout poll.
 - Playwright cần cài `chromium` bằng `playwright install chromium`.
 - Nếu bị checkpoint / MFA / account locked → tool sẽ báo `login_failed` hoặc reason tương ứng, account cần xử lý thủ công.
 
