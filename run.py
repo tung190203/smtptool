@@ -849,16 +849,21 @@ def _parse_iso_ts(s: str) -> float:
         return 0.0
 
 
-CODE_RE = re.compile(r'(?:security code|verification code|access code)[:\s]*<?\b(\d{6,8})\b', re.I)
-CODE_RE_FALLBACK = re.compile(r'\b(\d{6,7})\b')
+CODE_RE = re.compile(r'(?<!\d)(\d{6})(?!\d)')
 
 
 def extract_code(doc: dict) -> str | None:
-    body = doc.get("text") or doc.get("html") or ""
+    body = " ".join(
+        str(v or "") for v in (
+            doc.get("subject"),
+            doc.get("text"),
+            doc.get("html"),
+            doc.get("body"),
+            doc.get("content"),
+        )
+    )
     if not isinstance(body, str): return None
     m = CODE_RE.search(body)
-    if m: return m.group(1)
-    m = CODE_RE_FALLBACK.search(body)
     if m: return m.group(1)
     return None
 
@@ -885,6 +890,7 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
     )
     last_diag = 0
     last_seen = "no inbox docs"
+    last_skip = ""
     while time.time() < deadline:
         for api_url in api_urls:
             try:
@@ -904,16 +910,24 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
                 last_seen = f"{api_url} error={type(exc).__name__}: {str(exc)[:80]}"
             for d in docs:
                 created_ts = _parse_iso_ts(d.get("createdAt", ""))
-                if created_ts < accept_ts: continue
+                if created_ts < accept_ts:
+                    last_skip = f"latest mail old createdAt={d.get('createdAt', '')}"
+                    continue
                 code = extract_code(d)
                 if code:
                     pw_log(f"    [otp-mail] found code {code} via {api_url} at {d.get('createdAt')}")
                     return code
+                last_skip = (
+                    f"mail found but no code subject={str(d.get('subject', ''))[:80]} "
+                    f"createdAt={d.get('createdAt', '')}"
+                )
         if time.time() - last_diag >= 30:
-            pw_log(f"    [otp-mail] waiting... {last_seen}")
+            diag = f"{last_seen}; {last_skip}" if last_skip else last_seen
+            pw_log(f"    [otp-mail] waiting... {diag}")
             last_diag = time.time()
         time.sleep(3)
-    pw_log(f"    [otp-mail] timeout no code. last={last_seen}")
+    diag = f"{last_seen}; {last_skip}" if last_skip else last_seen
+    pw_log(f"    [otp-mail] timeout no code. last={diag}")
     return None
 
 
