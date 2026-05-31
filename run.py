@@ -77,6 +77,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 TIMEOUT     = (5, 15)
 MAX_RETRIES = 2
+APP_VERSION = "2026-05-31-mkp-domain-log"
 
 # ── Playwright + smvmail ──────────────────────────────────────────────────────
 SMVMAIL_API = "https://smvmail.com/api/email"
@@ -1511,12 +1512,10 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
 # ─────────────────────────────────────────────────────────────────────────────
 def load_accounts():
     """Load accounts. Support these formats per line:
-       email|password
        email|password|mkp
        email|password|refresh_token|client_id
     For the 4-column token format, refresh_token/client_id are preserved.
     `mkp` is the full recovery email used to receive OTP.
-    If `mkp` is absent, fall back to auto-generated smvmail address.
     Returns list of tuples: (email, password, recovery_email, refresh_token, client_id)
     """
     rows = []
@@ -1534,12 +1533,12 @@ def load_accounts():
                 if len(parts) == 3 and parts[2]:
                     rec = parts[2]
                 elif len(parts) >= 4:
-                    rec = email.split("@")[0] + "@smvmail.com"
+                    rec = ""
                     refresh_token = parts[2]
                     client_id = parts[3]
                 else:
-                    # default fallback used previously
-                    rec = email.split("@")[0] + "@smvmail.com"
+                    safe_print(f"⚠️ Bỏ qua dòng thiếu mkp: {email}|***")
+                    continue
                 rows.append((email, password, rec, refresh_token, client_id))
     return rows
 
@@ -1606,6 +1605,10 @@ def process(item):
     proxy_label = proxy["server"] if proxy else "no-proxy"
     prefix = f"[{idx}/{total}] {email}  ({proxy_label})"
     safe_print(f"{prefix} ... starting", flush=True)
+    if rec:
+        safe_print(f"  [input] mkp/recovery_email = {rec}", flush=True)
+    elif input_refresh:
+        safe_print(f"  [input] dùng refresh_token input, không có mkp", flush=True)
     wrote_reason = False
     try:
         proxy_ok, proxy_reason = check_proxy(proxy)
@@ -1690,6 +1693,7 @@ def main():
         return
 
     proxies = load_proxies()
+    print(f"🔖 Version: {APP_VERSION}")
     print(f"\n📋 Đã load {len(accounts)} accounts từ input.txt")
     if proxies:
         print(f"🌐 Đã load {len(proxies)} proxies từ proxy.txt")

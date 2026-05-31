@@ -211,9 +211,12 @@ class SMTPUnlockGUI:
             if not line or line.startswith("#"):
                 continue
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) < 2:
+            if len(parts) not in (3, 4):
                 messagebox.showerror("Lỗi format", 
                                    f"Dòng {i} không hợp lệ. Hỗ trợ email|password|mkp hoặc email|password|refresh_token|client_id:\n{line}")
+                return False
+            if len(parts) == 3 and "@" not in parts[2]:
+                messagebox.showerror("Lỗi format", f"Dòng {i} thiếu mkp dạng full email:\n{line}")
                 return False
             valid_lines.append(line)
         
@@ -243,8 +246,14 @@ class SMTPUnlockGUI:
             if not line or line.startswith("#"):
                 continue
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) < 2:
-                messagebox.showerror("Lỗi format", f"Dòng {i} không hợp lệ:\n{line}")
+            if len(parts) not in (3, 4):
+                messagebox.showerror(
+                    "Lỗi format",
+                    f"Dòng {i} không hợp lệ. Hỗ trợ email|password|mkp hoặc email|password|refresh_token|client_id:\n{line}",
+                )
+                return None
+            if len(parts) == 3 and "@" not in parts[2]:
+                messagebox.showerror("Lỗi format", f"Dòng {i} thiếu mkp dạng full email:\n{line}")
                 return None
 
             email = parts[0]
@@ -281,6 +290,7 @@ class SMTPUnlockGUI:
             
             import run as backend
             backend.LOG_SINK = self.log
+            self.log(f"🔖 Version: {getattr(backend, 'APP_VERSION', 'unknown')}")
             load_accounts = backend.load_accounts
             load_proxies = backend.load_proxies
             process = backend.process

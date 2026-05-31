@@ -43,7 +43,6 @@ python -m playwright install chromium
 
 - Mỗi dòng là một account.
 - Hỗ trợ các format:
-  - `email|password`
   - `email|password|mkp`  (mkp là full mail khôi phục dùng để nhận OTP, ví dụ `user@smvmail.com`)
   - `email|password|refresh_token|client_id`  (2 cột cuối được chấp nhận nhưng không dùng)
 - Dấu `|` là phân tách. Dòng rỗng hoặc bắt đầu bằng `#` sẽ bị bỏ qua.
@@ -51,7 +50,7 @@ python -m playwright install chromium
 Ví dụ:
 ```
 user1@hotmail.com|password1|user1@smvmail.com
-user2@hotmail.com|password2
+user2@hotmail.com|password2|user2@meomail.site
 user3@hotmail.com|password3|refresh_token|client_id
 ```
 
@@ -79,7 +78,7 @@ user3@hotmail.com|password3|refresh_token|client_id
 
 - Trên GUI có nút `Check live` để kiểm tra trước khi bấm `Chạy`.
 - Với input `email|password|refresh_token|client_id`, tool đổi refresh token sang SMTP scope rồi test XOAUTH2.
-- Với input `email|password` hoặc `email|password|mkp`, tool chạy OAuth để lấy refresh token rồi test SMTP XOAUTH2.
+- Với input `email|password|mkp`, tool chạy OAuth để lấy refresh token rồi test SMTP XOAUTH2.
 - Check live không gọi API bật SMTP/IMAP/POP, chỉ kiểm tra trạng thái đăng nhập/token và SMTP hiện tại.
 
 **Luồng xử lý (mỗi account)**
@@ -87,7 +86,7 @@ user3@hotmail.com|password3|refresh_token|client_id
 1. Lấy proxy (nếu có) từ pool (round-robin). Browser được pre-warm và chia sẻ cho mỗi thread; proxy gán ở context-level.
 2. Dùng Playwright mở trang login.force URL (login.live.com → redirect sang outlook).
 3. Điền email → password, xử lý các bước bổ sung:
-   - "Verify your email" → điền `mkp` (từ input hoặc auto `username@smvmail.com`), poll mail free để lấy code, điền code.
+   - "Verify your email" → điền `mkp` từ input, poll đúng domain mail free để lấy code, điền code.
    - KMSI / Consent / Skip page → click tự động nếu có.
 4. Khi vào được `outlook.live.com` (hoặc khi script sniff ra request chứa `service.svc` có header `Authorization: MSAuth1.0` và `x-anchormailbox`), inject `fetch()` gọi `SetConsumerMailbox` với body bật SMTP/IMAP/POP.
 5. Nếu API trả `WasSuccessful=true` → fast path: ghi là `unlocked` và thử lấy refresh_token để lưu vào `enabled.txt`.
