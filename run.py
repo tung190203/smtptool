@@ -850,6 +850,7 @@ def _parse_iso_ts(s: str) -> float:
 
 
 CODE_RE = re.compile(r'(?<!\d)(\d{6})(?!\d)')
+OTP_DATE_FIELDS = ("createdAt", "date", "receivedAt", "created_at", "time", "timestamp")
 
 
 def extract_code(doc: dict) -> str | None:
@@ -860,12 +861,36 @@ def extract_code(doc: dict) -> str | None:
             doc.get("html"),
             doc.get("body"),
             doc.get("content"),
+            doc.get("bodyText"),
+            doc.get("bodyHtml"),
+            doc.get("message"),
         )
     )
+    if not body.strip():
+        try:
+            body = json.dumps(doc, ensure_ascii=False)
+        except Exception:
+            body = str(doc)
     if not isinstance(body, str): return None
     m = CODE_RE.search(body)
     if m: return m.group(1)
     return None
+
+
+def doc_time(doc: dict) -> tuple[float, str]:
+    for field in OTP_DATE_FIELDS:
+        value = doc.get(field)
+        if value in (None, ""):
+            continue
+        if isinstance(value, (int, float)):
+            ts = float(value)
+            if ts > 10_000_000_000:
+                ts = ts / 1000
+            return ts, f"{field}={value}"
+        ts = _parse_iso_ts(str(value))
+        if ts:
+            return ts, f"{field}={value}"
+    return 0.0, "no timestamp"
 
 
 def otp_api_urls_for_email(email: str) -> list[str]:
@@ -902,24 +927,25 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
                 )
                 docs = r.json().get("data", {}).get("docs", []) if r.status_code == 200 else []
                 if docs:
-                    last_seen = f"{api_url} status={r.status_code} docs={len(docs)} latest={docs[0].get('createdAt', '')}"
+                    _, latest_label = doc_time(docs[0])
+                    last_seen = f"{api_url} status={r.status_code} docs={len(docs)} latest={latest_label}"
                 else:
                     last_seen = f"{api_url} status={r.status_code} docs=0"
             except Exception as exc:
                 docs = []
                 last_seen = f"{api_url} error={type(exc).__name__}: {str(exc)[:80]}"
             for d in docs:
-                created_ts = _parse_iso_ts(d.get("createdAt", ""))
-                if created_ts < accept_ts:
-                    last_skip = f"latest mail old createdAt={d.get('createdAt', '')}"
+                created_ts, date_label = doc_time(d)
+                if created_ts and created_ts < accept_ts:
+                    last_skip = f"latest mail old {date_label}"
                     continue
                 code = extract_code(d)
                 if code:
-                    pw_log(f"    [otp-mail] found code {code} via {api_url} at {d.get('createdAt')}")
+                    pw_log(f"    [otp-mail] found code {code} via {api_url} at {date_label}")
                     return code
                 last_skip = (
                     f"mail found but no code subject={str(d.get('subject', ''))[:80]} "
-                    f"createdAt={d.get('createdAt', '')}"
+                    f"{date_label} keys={','.join(list(d.keys())[:8])}"
                 )
         if time.time() - last_diag >= 30:
             diag = f"{last_seen}; {last_skip}" if last_skip else last_seen
@@ -1006,24 +1032,36 @@ def handle_verify_email_page(page: Page, recovery_email: str) -> str:
             return f"không fill được OTC: {e}"
 
     shot(page, "otc_filled")
-    # Idea 8: bỏ sleep(1.5) trước submit — click ngay
-    try_click(page, [
+    clicked_submit = try_click(page, [
         '#idSubmit_SAOTCC_Continue', '#idSIButton9',
+        'button[data-testid="primaryButton"]',
+        'button:has-text("Continue")',
         'input[type="submit"]', 'button:has-text("Verify")',
         'button:has-text("Next")', 'button:has-text("Submit")',
         'button[type="submit"]',
     ], timeout=3000, label="Submit OTC")
+    if not clicked_submit:
+        pw_log("    [otc] không click được Submit OTC, thử nhấn Enter")
+        try:
+            page.keyboard.press("Enter")
+        except Exception:
+            pass
     try:
         page.wait_for_selector(
             'input[name="passwd"], input[type="password"], '
-            'text=/Verify your email|incorrect|wrong|expired|try again|too many|temporarily|outlook.live.com/i',
-            timeout=10000,
+            'text=/Verify your email|Enter your code|incorrect|wrong|expired|try again|too many|temporarily|outlook.live.com/i',
+            timeout=12000,
         )
     except PWTimeout: pass
     page_text = page_text_snippet(page)
     if re.search(r"incorrect|wrong|expired|try again|too many|temporarily", page_text, re.I):
         pw_log(f"  [verify-email] MS OTP error: {page_text}")
         return f"otp_submit_error: {page_text[:120]}"
+    if re.search(r"Enter your code", page_text, re.I) and not page.locator('input[name="passwd"], input[type="password"]').first.is_visible():
+        pw_log(f"  [verify-email] vẫn ở trang nhập OTP sau submit: {page_text}")
+        return f"otp_not_submitted: {page_text[:120]}"
+    if page_text:
+        pw_log(f"  [verify-email] after Submit OTC page: {page_text[:160]}")
     shot(page, "after_otc_submit")
     return "ok"
 
