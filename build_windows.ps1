@@ -4,8 +4,72 @@
 # and builds a distributable folder using PyInstaller.
 
 param(
-    [int]$Workers = 4
+    [int]$Workers = 4,
+    [switch]$NoKill
 )
+
+function Stop-RunningApp {
+    if ($NoKill) {
+        Write-Host "== Skipping process cleanup because -NoKill was passed =="
+        return
+    }
+
+    Write-Host "== Stopping old SMTP Unlock processes if any =="
+    $names = @("smtp_unlock", "smtp_unlock_gui")
+    foreach ($name in $names) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "Stopping $($_.ProcessName) pid=$($_.Id)"
+            try {
+                Stop-Process -Id $_.Id -Force -ErrorAction Stop
+            } catch {
+                Write-Host "Warning: could not stop pid=$($_.Id): $_"
+            }
+        }
+    }
+    Start-Sleep -Seconds 1
+}
+
+function Remove-PathWithRetry($Path) {
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    for ($i = 1; $i -le 5; $i++) {
+        try {
+            Remove-Item $Path -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq 5) {
+                throw
+            }
+            Write-Host "Warning: cannot remove $Path yet ($i/5): $_"
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+function Copy-PathWithRetry($Source, $Destination) {
+    for ($i = 1; $i -le 5; $i++) {
+        try {
+            Copy-Item $Source $Destination -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq 5) {
+                throw
+            }
+            Write-Host "Warning: cannot copy $Source to $Destination yet ($i/5): $_"
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+Stop-RunningApp
+
+Write-Host "== Cleaning old build output =="
+Remove-PathWithRetry "dist\smtp_unlock"
+Remove-PathWithRetry "dist\smtp_unlock_gui"
+Remove-PathWithRetry "build\smtp_unlock"
+Remove-PathWithRetry "build\smtp_unlock_gui"
 
 Write-Host "== Build script: creating virtualenv and installing deps =="
 python -m venv .venv
@@ -26,8 +90,8 @@ Write-Host "== Merging GUI into main bundle =="
 $guiDist = "dist\smtp_unlock_gui"
 $mainDist = "dist\smtp_unlock"
 if (Test-Path $guiDist) {
-    Copy-Item "$guiDist\*" "$mainDist\" -Recurse -Force
-    Remove-Item $guiDist -Recurse -Force
+    Copy-PathWithRetry "$guiDist\*" "$mainDist\"
+    Remove-PathWithRetry $guiDist
 }
 
 Write-Host "== Build finished =="
