@@ -828,6 +828,15 @@ def safe_fill(page: Page, selectors: list[str], text: str, timeout: int = 8000) 
     return False
 
 
+def page_text_snippet(page: Page, limit: int = 220) -> str:
+    try:
+        text = page.locator("body").inner_text(timeout=2000)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:limit]
+    except Exception:
+        return ""
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  SMVMAIL OTC
 # ─────────────────────────────────────────────────────────────────────────────
@@ -876,6 +885,8 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
         f"    [otp-mail] poll {email}  since={since_ts:.1f}  "
         f"timeout={timeout}s api={api_urls[0]}"
     )
+    last_diag = 0
+    last_seen = "no inbox docs"
     while time.time() < deadline:
         for api_url in api_urls:
             try:
@@ -886,8 +897,13 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
                     headers={"User-Agent": "Mozilla/5.0"},
                 )
                 docs = r.json().get("data", {}).get("docs", []) if r.status_code == 200 else []
-            except Exception:
+                if docs:
+                    last_seen = f"{api_url} status={r.status_code} docs={len(docs)} latest={docs[0].get('createdAt', '')}"
+                else:
+                    last_seen = f"{api_url} status={r.status_code} docs=0"
+            except Exception as exc:
                 docs = []
+                last_seen = f"{api_url} error={type(exc).__name__}: {str(exc)[:80]}"
             for d in docs:
                 created_ts = _parse_iso_ts(d.get("createdAt", ""))
                 if created_ts < accept_ts: continue
@@ -895,7 +911,11 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
                 if code:
                     pw_log(f"    [otp-mail] found code {code} via {api_url} at {d.get('createdAt')}")
                     return code
+        if time.time() - last_diag >= 30:
+            pw_log(f"    [otp-mail] waiting... {last_seen}")
+            last_diag = time.time()
         time.sleep(3)
+    pw_log(f"    [otp-mail] timeout no code. last={last_seen}")
     return None
 
 
@@ -914,17 +934,27 @@ def handle_verify_email_page(page: Page, recovery_email: str) -> str:
         'button:has-text("Send code")', '#idSIButton9', 'input[type="submit"]',
     ], timeout=5000, label="Send code"):
         return "không click được Send code"
-    # Idea 8: thay sleep(3) bằng wait error message (mất 0s nếu không có error)
+
     try:
-        err = page.locator('text=/doesn.?t match/i').first
-        if err.is_visible(timeout=2000):
-            err_text = err.text_content() or ""
-            pw_log(f"  [verify-email] MS error: {err_text[:200]}")
-            return f"email mismatch: {err_text[:120]}"
-    except Exception: pass
+        page.wait_for_selector(
+            'text=/Enter your code|doesn.?t match|didn.?t match|try again|too many|temporarily|can.?t send|cannot send/i',
+            timeout=8000,
+        )
+    except PWTimeout:
+        pass
+
+    page_text = page_text_snippet(page)
+    if re.search(r"doesn.?t match|didn.?t match", page_text, re.I):
+        pw_log(f"  [verify-email] MS error: {page_text}")
+        return f"email mismatch: {page_text[:120]}"
+    if re.search(r"too many|temporarily|can.?t send|cannot send|try again", page_text, re.I):
+        pw_log(f"  [verify-email] MS send-code error: {page_text}")
+        return f"send_code_error: {page_text[:120]}"
+    if page_text:
+        pw_log(f"  [verify-email] after Send code page: {page_text[:160]}")
     shot(page, "after_send_code")
 
-    code = poll_smvmail(recovery_email, send_ts, timeout=150)
+    code = poll_smvmail(recovery_email, send_ts, timeout=240)
     if not code:
         return "otp mail no code"
 
@@ -971,14 +1001,17 @@ def handle_verify_email_page(page: Page, recovery_email: str) -> str:
         'button:has-text("Next")', 'button:has-text("Submit")',
         'button[type="submit"]',
     ], timeout=3000, label="Submit OTC")
-    # Idea 8: thay sleep(4) bằng wait_for_selector cho password page (giảm 3-4s)
     try:
         page.wait_for_selector(
             'input[name="passwd"], input[type="password"], '
-            'text=/Verify your email/i',
-            timeout=8000,
+            'text=/Verify your email|incorrect|wrong|expired|try again|too many|temporarily|outlook.live.com/i',
+            timeout=10000,
         )
     except PWTimeout: pass
+    page_text = page_text_snippet(page)
+    if re.search(r"incorrect|wrong|expired|try again|too many|temporarily", page_text, re.I):
+        pw_log(f"  [verify-email] MS OTP error: {page_text}")
+        return f"otp_submit_error: {page_text[:120]}"
     shot(page, "after_otc_submit")
     return "ok"
 
