@@ -77,7 +77,7 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 TIMEOUT     = (5, 15)
 MAX_RETRIES = 2
-APP_VERSION = "2026-05-31-mkp-domain-log"
+APP_VERSION = "2026-05-31-mkp-detail-api"
 
 # ── Playwright + smvmail ──────────────────────────────────────────────────────
 SMVMAIL_API = "https://smvmail.com/api/email"
@@ -131,11 +131,22 @@ CHROME_FLAGS = [
 
 write_lock = Lock()
 LOG_SINK = None
+LOG_RUN_ID = 0
+STOP_EVENT = None
+_log_state = thread_local()
+
+
+def should_stop() -> bool:
+    ev = STOP_EVENT
+    return bool(ev and ev.is_set())
 
 
 def _emit_log(line):
     sink = LOG_SINK
     if sink is None:
+        return
+    source_run_id = getattr(_log_state, "run_id", LOG_RUN_ID)
+    if source_run_id != LOG_RUN_ID:
         return
     try:
         sink(str(line))
@@ -893,6 +904,25 @@ def doc_time(doc: dict) -> tuple[float, str]:
     return 0.0, "no timestamp"
 
 
+def fetch_otp_mail_detail(api_url: str, doc: dict) -> dict:
+    doc_id = doc.get("_id") or doc.get("id")
+    if not doc_id:
+        return doc
+    detail_url = f"{api_url.rstrip('/')}/{quote(str(doc_id), safe='')}"
+    try:
+        r = requests.get(detail_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code != 200:
+            return doc
+        data = r.json().get("data")
+        if isinstance(data, dict):
+            merged = dict(doc)
+            merged.update(data)
+            return merged
+    except Exception:
+        pass
+    return doc
+
+
 def otp_api_urls_for_email(email: str) -> list[str]:
     domain = email.rsplit("@", 1)[1].lower() if "@" in email else ""
     if domain in OTP_MAIL_DOMAINS:
@@ -917,6 +947,9 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
     last_seen = "no inbox docs"
     last_skip = ""
     while time.time() < deadline:
+        if should_stop():
+            pw_log("    [otp-mail] stopped")
+            return None
         for api_url in api_urls:
             try:
                 r = requests.get(
@@ -940,6 +973,13 @@ def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
                     last_skip = f"latest mail old {date_label}"
                     continue
                 code = extract_code(d)
+                if not code:
+                    d = fetch_otp_mail_detail(api_url, d)
+                    created_ts, date_label = doc_time(d)
+                    if created_ts and created_ts < accept_ts:
+                        last_skip = f"latest mail old after detail {date_label}"
+                        continue
+                    code = extract_code(d)
                 if code:
                     pw_log(f"    [otp-mail] found code {code} via {api_url} at {date_label}")
                     return code
@@ -1252,6 +1292,8 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
     safe_print(f"\n{'='*80}")
     safe_print(f"  Unlock SMTP for {email}")
     safe_print('='*80)
+    if should_stop():
+        return "stopped"
 
     captured = {
         "token": None,
@@ -1462,6 +1504,8 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
             """, args)
 
         # Idea 4: truyền captured vào để login_outlook có thể early exit
+        if should_stop():
+            return "stopped"
         r = login_outlook(page, email, password, recovery_email, captured=captured)
         _log(f"login: {r}")
         if r != "ok":
@@ -1469,6 +1513,8 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
 
         # Always capture a fresh mailbox-context token from Outlook inbox.
         # Tokens sniffed during login can be too early and often produce 412/OwaInvalid.
+        if should_stop():
+            return "stopped"
         goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS, preserve_existing=True)
 
         if not captured["anchor"]:
@@ -1644,16 +1690,24 @@ def get_refresh_token_with_retry(email: str, password: str, proxy=None):
 
 def process(item):
     # item: (idx, total, email, password, recovery_email, refresh_token, client_id, proxy)
-    if len(item) >= 8:
+    if len(item) >= 9:
+        idx, total, email, password, recovery_email, input_refresh, input_client_id, proxy, run_id = item
+        _log_state.run_id = run_id
+    elif len(item) >= 8:
         idx, total, email, password, recovery_email, input_refresh, input_client_id, proxy = item
+        _log_state.run_id = LOG_RUN_ID
     else:
         idx, total, email, password, recovery_email, proxy = item
         input_refresh = ""
         input_client_id = ""
+        _log_state.run_id = LOG_RUN_ID
     rec = recovery_email
     proxy_label = proxy["server"] if proxy else "no-proxy"
     prefix = f"[{idx}/{total}] {email}  ({proxy_label})"
     safe_print(f"{prefix} ... starting", flush=True)
+    if should_stop():
+        safe_print(f"⏹ {prefix} -> stopped", flush=True)
+        return False
     if rec:
         safe_print(f"  [input] mkp/recovery_email = {rec}", flush=True)
     elif input_refresh:
@@ -1683,6 +1737,10 @@ def process(item):
         append_line(ERROR_REASON_FILE, f"{email}|{result}")
         wrote_reason = True
         _log(f"{email}: {result}")
+
+    if should_stop() or result == "stopped":
+        safe_print(f"⏹ {prefix} -> stopped", flush=True)
+        return False
 
     if result == "unlocked":
         append_line(UNLOCKED_FILE, f"{email}|{password}")

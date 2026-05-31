@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import subprocess
+from concurrent.futures import wait, FIRST_COMPLETED
 from datetime import datetime
 from collections import Counter
 
@@ -44,6 +45,8 @@ class SMTPUnlockGUI:
         self.root.resizable(True, True)
         self.running = False
         self.main_thread_id = threading.get_ident()
+        self.active_run_id = 0
+        self.stop_event = threading.Event()
         
         # Main frame
         main_frame = ttk.Frame(root, padding="10")
@@ -153,6 +156,12 @@ class SMTPUnlockGUI:
         self.status_text.insert(tk.END, f"{msg}\n")
         self.status_text.see(tk.END)
         self.status_text.config(state=tk.DISABLED)
+
+    def make_log_sink(self, run_id):
+        def sink(msg):
+            if self.active_run_id == run_id:
+                self.log(msg)
+        return sink
     
     def clear_input(self):
         """Clear input text"""
@@ -280,8 +289,9 @@ class SMTPUnlockGUI:
             return None
         return accounts
     
-    def run_tool_thread(self, workers):
+    def run_tool_thread(self, workers, run_id, stop_event):
         """Run tool in background thread"""
+        sink = None
         try:
             self.log("🚀 Bắt đầu chạy...")
             self.log(f"⏱  Số luồng: {workers}")
@@ -289,7 +299,10 @@ class SMTPUnlockGUI:
             self.log(f"🌐 Proxy file: {PROXY_FILE}")
             
             import run as backend
-            backend.LOG_SINK = self.log
+            sink = self.make_log_sink(run_id)
+            backend.LOG_SINK = sink
+            backend.LOG_RUN_ID = run_id
+            backend.STOP_EVENT = stop_event
             self.log(f"🔖 Version: {getattr(backend, 'APP_VERSION', 'unknown')}")
             load_accounts = backend.load_accounts
             load_proxies = backend.load_proxies
@@ -320,6 +333,8 @@ class SMTPUnlockGUI:
                 self.log(f"🌐 Không có proxy (chạy IP gốc)")
             
             def worker(item):
+                if stop_event.is_set():
+                    return False
                 idx, total, em, pw = item[0], item[1], item[2], item[3]
                 try:
                     return process(item)
@@ -328,7 +343,7 @@ class SMTPUnlockGUI:
                     return False
             
             items = [
-                (i + 1, len(accounts), em, pw, rec, refresh, client_id, proxies[i % len(proxies)] if proxies else None)
+                (i + 1, len(accounts), em, pw, rec, refresh, client_id, proxies[i % len(proxies)] if proxies else None, run_id)
                 for i, (em, pw, rec, refresh, client_id) in enumerate(accounts)
             ]
             ok_count = 0
@@ -337,13 +352,28 @@ class SMTPUnlockGUI:
             self.log("\n▶ Chạy...")
             t0 = time.time()
             
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futures = [ex.submit(worker, item) for item in items]
-                for f in as_completed(futures):
-                    if f.result():
-                        ok_count += 1
-                    else:
-                        fail_count += 1
+            ex = ThreadPoolExecutor(max_workers=workers)
+            futures = [ex.submit(worker, item) for item in items]
+            pending = set(futures)
+            try:
+                while pending:
+                    if stop_event.is_set() or self.active_run_id != run_id:
+                        for f in pending:
+                            f.cancel()
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        self.log("⏹ Đã yêu cầu dừng run cũ; các phiên đang chạy sẽ thoát sớm.")
+                        return
+                    done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                    for f in done:
+                        if f.cancelled():
+                            fail_count += 1
+                        elif f.result():
+                            ok_count += 1
+                        else:
+                            fail_count += 1
+            finally:
+                if not stop_event.is_set():
+                    ex.shutdown(wait=True)
             
             elapsed = time.time() - t0
             
@@ -399,19 +429,27 @@ class SMTPUnlockGUI:
         finally:
             try:
                 import run as backend
-                backend.LOG_SINK = None
+                if getattr(backend, "LOG_SINK", None) is sink:
+                    backend.LOG_SINK = None
+                    backend.STOP_EVENT = None
             except Exception:
                 pass
-            self.root.after(0, self.finish_run_ui)
+            if self.active_run_id == run_id:
+                self.root.after(0, self.finish_run_ui)
 
-    def check_live_thread(self, workers, accounts, ignore_refresh=False):
+    def check_live_thread(self, workers, accounts, ignore_refresh=False, run_id=0, stop_event=None):
+        sink = None
+        stop_event = stop_event or threading.Event()
         try:
             self.log("✓ Bắt đầu check live...")
             self.log(f"⏱  Số luồng: {workers}")
             self.log(f"🔧 Không dùng refresh_token: {ignore_refresh}")
 
             import run as backend
-            backend.LOG_SINK = self.log
+            sink = self.make_log_sink(run_id)
+            backend.LOG_SINK = sink
+            backend.LOG_RUN_ID = run_id
+            backend.STOP_EVENT = stop_event
             load_proxies = backend.load_proxies
             check_live_account = backend.check_live_account
             append_line = backend.append_line
@@ -434,6 +472,8 @@ class SMTPUnlockGUI:
                     os.remove(path)
 
             def worker(item):
+                if stop_event.is_set():
+                    return False
                 idx, total, acc, proxy = item
                 email = acc["email"]
                 proxy_label = proxy["server"] if proxy else "no-proxy"
@@ -482,13 +522,28 @@ class SMTPUnlockGUI:
             dead_count = 0
             t0 = time.time()
 
-            with ThreadPoolExecutor(max_workers=workers) as ex:
-                futures = [ex.submit(worker, item) for item in items]
-                for f in as_completed(futures):
-                    if f.result():
-                        live_count += 1
-                    else:
-                        dead_count += 1
+            ex = ThreadPoolExecutor(max_workers=workers)
+            futures = [ex.submit(worker, item) for item in items]
+            pending = set(futures)
+            try:
+                while pending:
+                    if stop_event.is_set() or self.active_run_id != run_id:
+                        for f in pending:
+                            f.cancel()
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        self.log("⏹ Đã yêu cầu dừng check live cũ; các phiên đang chạy sẽ thoát sớm.")
+                        return
+                    done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+                    for f in done:
+                        if f.cancelled():
+                            dead_count += 1
+                        elif f.result():
+                            live_count += 1
+                        else:
+                            dead_count += 1
+            finally:
+                if not stop_event.is_set():
+                    ex.shutdown(wait=True)
 
             elapsed = time.time() - t0
             self.log("\n" + "="*60)
@@ -509,10 +564,13 @@ class SMTPUnlockGUI:
         finally:
             try:
                 import run as backend
-                backend.LOG_SINK = None
+                if getattr(backend, "LOG_SINK", None) is sink:
+                    backend.LOG_SINK = None
+                    backend.STOP_EVENT = None
             except Exception:
                 pass
-            self.root.after(0, self.finish_run_ui)
+            if self.active_run_id == run_id:
+                self.root.after(0, self.finish_run_ui)
 
     def finish_run_ui(self):
         self.running = False
@@ -539,6 +597,9 @@ class SMTPUnlockGUI:
             return
         
         self.running = True
+        self.active_run_id += 1
+        run_id = self.active_run_id
+        self.stop_event = threading.Event()
         self.run_button.config(state=tk.DISABLED)
         self.check_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
@@ -548,7 +609,11 @@ class SMTPUnlockGUI:
         self.status_var.set("Chạy...")
         
         # Run in background thread
-        thread = threading.Thread(target=self.run_tool_thread, args=(workers,), daemon=True)
+        thread = threading.Thread(
+            target=self.run_tool_thread,
+            args=(workers, run_id, self.stop_event),
+            daemon=True,
+        )
         thread.start()
 
     def check_live(self):
@@ -570,6 +635,9 @@ class SMTPUnlockGUI:
             return
 
         self.running = True
+        self.active_run_id += 1
+        run_id = self.active_run_id
+        self.stop_event = threading.Event()
         self.run_button.config(state=tk.DISABLED)
         self.check_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
@@ -581,13 +649,15 @@ class SMTPUnlockGUI:
         ignore_refresh = self.ignore_refresh_var.get()
         thread = threading.Thread(
             target=self.check_live_thread,
-            args=(workers, accounts, ignore_refresh),
+            args=(workers, accounts, ignore_refresh, run_id, self.stop_event),
             daemon=True,
         )
         thread.start()
     
     def stop_tool(self):
         """Stop tool (graceful)"""
+        self.stop_event.set()
+        self.active_run_id += 1
         self.running = False
         self.run_button.config(state=tk.NORMAL)
         self.check_button.config(state=tk.NORMAL)
