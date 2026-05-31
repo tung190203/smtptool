@@ -865,12 +865,9 @@ def extract_code(doc: dict) -> str | None:
 
 def otp_api_urls_for_email(email: str) -> list[str]:
     domain = email.rsplit("@", 1)[1].lower() if "@" in email else ""
-    urls = []
     if domain in OTP_MAIL_DOMAINS:
-        urls.append(f"https://{domain}/api/email")
-    if SMVMAIL_API not in urls:
-        urls.append(SMVMAIL_API)
-    return urls
+        return [f"https://{domain}/api/email"]
+    return [SMVMAIL_API]
 
 
 def poll_smvmail(email: str, since_ts: float, timeout: int = 180) -> str | None:
