@@ -93,7 +93,7 @@ DEFAULT_TIMEOUT = 15000
 LOGIN_GOTO_TIMEOUT = 30000
 LOGIN_GOTO_RETRIES = 2
 INBOX_GOTO_TIMEOUT = 45000
-TOKEN_WAIT_SECONDS = 45
+TOKEN_WAIT_SECONDS = 60
 OWA_INVALID_RETRY_WAIT_SECONDS = 60
 OWA_INVALID_MAX_RETRIES = 2
 PROXY_CHECK_URL = "https://login.live.com/"
@@ -1307,6 +1307,8 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
 
     def on_request(req):
         h = req.headers
+        if "x-anchormailbox" in h:
+            captured["anchor"] = h["x-anchormailbox"]
         if "x-owa-canary" in h:
             captured["canary"] = h["x-owa-canary"]
         if "x-client-version" in h:
@@ -1320,8 +1322,6 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
         if "service.svc" in req.url and "action=" in req.url:
             if "authorization" in h and "MSAuth1.0" in h["authorization"]:
                 captured["token"] = h["authorization"]
-            if "x-anchormailbox" in h:
-                captured["anchor"] = h["x-anchormailbox"]
 
     api_status = None
     api_was_successful = False  # P1: flag để skip SMTP verify nếu API trả WasSuccessful=true
@@ -1395,12 +1395,16 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
             captured["ms_cv"] = None
             action = "reload /mail/0/" if reload_page else "goto /mail/0/ (inbox only)"
             _log(action)
-            nav_urls = ["https://outlook.live.com/mail/0/"]
+            nav_urls = [
+                "https://outlook.live.com/mail/0/",
+                "https://outlook.live.com/owa/?nlp=1&path=/mail/inbox",
+            ]
             if reload_page:
                 cache_bust = int(time.time() * 1000)
                 nav_urls = [
                     f"https://outlook.live.com/owa/?nlp=1&path=/mail/inbox&cb={cache_bust}",
                     f"https://outlook.live.com/mail/0/?cb={cache_bust}",
+                    f"https://outlook.live.com/mail/0/inbox?cb={cache_bust}",
                 ]
 
             per_step_wait = max(6, seconds // (len(nav_urls) + (1 if reload_page else 0)))
@@ -1409,6 +1413,10 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
                     page.goto(nav_url, wait_until="domcontentloaded", timeout=INBOX_GOTO_TIMEOUT)
                 except Exception as exc:
                     _log(f"inbox navigation warning: {str(exc).splitlines()[0][:160]}")
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
                 if wait_for_mailbox_context(per_step_wait):
                     return True
 
@@ -1515,10 +1523,20 @@ def unlock_account(email: str, password: str, recovery_email: str, proxy=None) -
         # Tokens sniffed during login can be too early and often produce 412/OwaInvalid.
         if should_stop():
             return "stopped"
-        goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS, preserve_existing=True)
+        if not goto_inbox_and_wait_token(TOKEN_WAIT_SECONDS, preserve_existing=True):
+            _log("Chưa bắt được mailbox context lần đầu; reload Outlook và thử thêm")
+            goto_inbox_and_wait_token(OWA_INVALID_RETRY_WAIT_SECONDS, reload_page=True, preserve_existing=True)
+
+        if not captured["anchor"] and (captured["canary"] or captured["token"]):
+            captured["anchor"] = f"SMTP:{email}"
+            _log(f"Không sniff được x-anchormailbox; thử fallback anchor={captured['anchor']}")
 
         if not captured["anchor"]:
-            _log("Không bắt được x-anchormailbox từ Outlook")
+            _log(
+                "Không bắt được x-anchormailbox từ Outlook "
+                f"(url={page.url}, canary={'yes' if captured['canary'] else 'no'}, "
+                f"token={'yes' if captured['token'] else 'no'}, page={page_text_snippet(page, 160)})"
+            )
             return "Không bắt được Outlook mailbox context - Outlook chưa load đủ hoặc account bị checkpoint"
 
         if captured["token"]:
